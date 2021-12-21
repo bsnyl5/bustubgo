@@ -45,6 +45,9 @@ func (b *BufferPool) lockedAllocatePage() int {
 	b.nextNewPage += b.numInstances
 	return newpage
 }
+func (b *Page) GetPageID() int {
+	return b.pageID
+}
 
 func (b *BufferPool) NewPage() *Page {
 	var (
