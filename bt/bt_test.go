@@ -7,6 +7,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func makeTreeVal(k []int, defaultVal int) []treeVal {
+	ret := make([]treeVal, 0, len(k))
+	for _, item := range k {
+		ret = append(ret, treeVal{
+			key: treeKey{main: item},
+			val: defaultVal,
+		})
+	}
+	return ret
+}
+
 func makeTreeKey(k []int) []treeKey {
 	ret := make([]treeKey, 0, len(k))
 	for _, item := range k {
@@ -17,7 +28,7 @@ func makeTreeKey(k []int) []treeKey {
 
 // test case 1,2,4, key = 4 => foundIDx = 2, result pointerIdx = 3
 // test case 1,2,4,5 key = 4 => foundIDx = 2, result pointer idx = 3
-// test case 1,2,4,5 key = 3 => foundIDx = 2, result pointer idx = 2
+// test case 1,2,4,5 key = 3 => foundIDx = 2, result pointerG idx = 2
 func Test_searchIdx(t *testing.T) {
 	type testcase struct {
 		input     []treeKey
@@ -59,4 +70,27 @@ func Test_searchIdx(t *testing.T) {
 		idx := n.findPointerIdx(tcase.searchKey)
 		assert.Equal(t, tcase.expect, idx)
 	}
+}
+
+func Test_btreeInsert(t *testing.T) {
+	tr := NewBtree()
+	ks := make([]int, 0, 11)
+	for i := 0; i < 11; i++ {
+		ks = append(ks, i)
+	}
+	keys := makeTreeKey(ks)
+	for _, item := range keys {
+		assert.NoError(t, tr.insert(item, 1))
+	}
+	root := tr.root
+	assert.False(t, root.isLeafNode)
+	assert.Equal(t, 2, root.size)
+
+	leftChild := root.children[0]
+	rightChild := root.children[1]
+	assert.Equal(t, treeKey{main: 5}, root.key[0])
+	leftData := leftChild.leafNode.data
+	rightData := rightChild.leafNode.data
+	assert.Equal(t, leftData[:leftChild.leafNode.size], makeTreeVal([]int{0, 1, 2, 3, 4}, 1))
+	assert.Equal(t, rightData[:rightChild.leafNode.size], makeTreeVal([]int{5, 6, 7, 8, 9, 10}, 1))
 }

@@ -76,23 +76,36 @@ func NewBtree() *btree {
 
 func (t *btree) insert(key treeKey, val int) error {
 	cur := cursor{}
-	n := cur.searchLeafNode(t, key).leafNode
-	idx, exact := n.findIdxForKey(key)
-	if exact {
-		return fmt.Errorf("duplicate key found %v", key)
-	}
-	if n.size < nodesize {
-		copy(n.data[idx+1:n.size+1], n.data[idx:n.size])
-		n.data[idx] = treeVal{
+	n := cur.searchLeafNode(t, key)
+	leaf := &n.leafNode
+
+	if leaf.size < nodesize {
+		idx, exact := leaf.findIdxForKey(key)
+		if exact {
+			return fmt.Errorf("duplicate key found %v", key)
+		}
+		copy(leaf.data[idx+1:leaf.size+1], leaf.data[idx:leaf.size])
+		leaf.data[idx] = treeVal{
 			val: val,
 			key: key,
 		}
+		leaf.size++
 		return nil
 	}
-	newRight, splitKey := n.splitNode()
+	newRight, splitKey := leaf.splitNode()
+	comp := compareKey(key, splitKey)
+	switch comp {
+	case -1:
+		leaf.insertVal(treeVal{key: key, val: val})
+	case 1:
+		newRight.insertVal(treeVal{key: key, val: val})
+	case 0:
+		return fmt.Errorf("exact key value pair already exist")
+	}
+
 	// retrieve currentParent from cursor latest stack
 	// if currentParent ==nil, create new currentParent(in this case current leaf is also the root node)
-	var currentParent *node
+	var currentParent = n
 	parLevel := 1
 	orphan := &node{
 		isLeafNode: true,
@@ -100,31 +113,41 @@ func (t *btree) insert(key treeKey, val int) error {
 	}
 
 	for {
+		// root node
 		if len(cur.stack)-parLevel+1 == 0 {
+			firstChild := currentParent
 			currentParent = &node{
 				level: parLevel,
 				mu:    &sync.RWMutex{},
+				size:  1,
 			}
+			t.root = currentParent
+			currentParent.children[0] = firstChild
+			currentParent.key[0] = splitKey
+			currentParent._insertPointerAtIdx(1, orphan)
+			break
 		} else {
 			currentParent = cur.stack[len(cur.stack)-parLevel]
 		}
+
 		idx, err := currentParent.findUniquePointerIdx(splitKey)
 		if err != nil {
 			return err
 		}
 		if currentParent.size < nodesize {
-			currentParent._insertPointerAtIdx(idx, splitKey, orphan)
+			currentParent._insertPointerAtIdx(idx, orphan)
 			break
 		}
 
 		newParent, newSplitKey := currentParent.splitNode()
 		parLevel++
 
-		currentParent._insertPointerAtIdx(idx, splitKey, orphan)
+		currentParent._insertPointerAtIdx(idx, orphan)
 
 		// let the next iteration handle this split with new parent propagated up the stack
 		orphan = newParent
 		splitKey = newSplitKey
+
 	}
 	return nil
 }
@@ -146,11 +169,10 @@ func (c *cursor) searchLeafNode(t *btree, searchKey treeKey) *node {
 	return curNode
 }
 
-func (n *node) _insertPointerAtIdx(idx int, key treeKey, child *node) {
-	copy(n.key[idx+1:n.size+1], n.key[idx:n.size])
+func (n *node) _insertPointerAtIdx(idx int, child *node) {
 	copy(n.children[idx+1:n.size+1], n.children[idx:n.size])
-	n.key[idx] = key
-	n.children[idx] = n
+	n.children[idx] = child
+	n.size++
 }
 
 func (n *node) splitNode() (*node, treeKey) {
@@ -177,6 +199,10 @@ func (n *leafNode) splitNode() (*leafNode, treeKey) {
 	}
 	idx := nodesize / 2 // right >= left
 	copy(newLeaf.data[:n.size-idx], n.data[idx:n.size])
+	// hacky empty values
+	for i := idx; i < n.size; i++ {
+		n.data[i] = treeVal{}
+	}
 	newLeaf.size = n.size - idx
 	n.size = idx
 
@@ -189,6 +215,17 @@ func (n *leafNode) splitNode() (*leafNode, treeKey) {
 	n.next = nil
 	splitKey := newLeaf.data[0].key
 	return newLeaf, splitKey
+}
+
+func (n *leafNode) insertVal(val treeVal) error {
+	idx, exact := n.findIdxForKey(val.key)
+	if exact {
+		return fmt.Errorf("exact key has already exist")
+	}
+	copy(n.data[idx+1:n.size+1], n.data[idx:n.size])
+	n.data[idx] = val
+	n.size++
+	return nil
 }
 
 func (n *leafNode) findIdxForKey(newKey treeKey) (int, bool) {
