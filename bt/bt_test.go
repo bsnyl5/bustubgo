@@ -66,13 +66,17 @@ func Test_searchIdx(t *testing.T) {
 	for _, tcase := range cases {
 		keys := tcase.input
 		copy(n.key[:len(keys)], keys)
-		n.size = len(keys)
+		n.keySize = len(keys)
 		idx := n.findPointerIdx(tcase.searchKey)
 		assert.Equal(t, tcase.expect, idx)
 	}
 }
 
 func Test_btreeInsert(t *testing.T) {
+	type insertTestCase struct {
+		insertions  []int
+		leafKeyVals [][]treeVal
+	}
 	tr := NewBtree()
 	ks := make([]int, 0, 11)
 	for i := 0; i < 11; i++ {
@@ -84,7 +88,7 @@ func Test_btreeInsert(t *testing.T) {
 	}
 	root := tr.root
 	assert.False(t, root.isLeafNode)
-	assert.Equal(t, 2, root.size)
+	assert.Equal(t, 1, root.keySize)
 
 	leftChild := root.children[0]
 	rightChild := root.children[1]
@@ -93,4 +97,14 @@ func Test_btreeInsert(t *testing.T) {
 	rightData := rightChild.leafNode.data
 	assert.Equal(t, leftData[:leftChild.leafNode.size], makeTreeVal([]int{0, 1, 2, 3, 4}, 1))
 	assert.Equal(t, rightData[:rightChild.leafNode.size], makeTreeVal([]int{5, 6, 7, 8, 9, 10}, 1))
+	assert.Equal(t, &leftChild.leafNode, rightChild.leafNode.prev)
+	assert.Equal(t, &rightChild.leafNode, leftChild.leafNode.next)
+}
+
+func sequentialUntil(last int) []int {
+	ks := make([]int, 0, last)
+	for i := 0; i < last; i++ {
+		ks = append(ks, i)
+	}
+	return ks
 }
