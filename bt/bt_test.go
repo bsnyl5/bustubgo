@@ -7,12 +7,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func makeTreeVal(k []int, defaultVal int) []treeVal {
+func makeTreeVal(k []int) []treeVal {
 	ret := make([]treeVal, 0, len(k))
 	for _, item := range k {
 		ret = append(ret, treeVal{
 			key: treeKey{main: item},
-			val: defaultVal,
+			val: item,
 		})
 	}
 	return ret
@@ -73,37 +73,78 @@ func Test_searchIdx(t *testing.T) {
 }
 
 func Test_btreeInsert(t *testing.T) {
+
+	// cur.stack from root -> nearest parent
 	type insertTestCase struct {
 		insertions  []int
 		leafKeyVals [][]treeVal
+		nodesize    int
 	}
-	tr := NewBtree()
-	ks := make([]int, 0, 11)
-	for i := 0; i < 11; i++ {
-		ks = append(ks, i)
+	tcases := []insertTestCase{
+		{
+			nodesize:   3,
+			insertions: []int{1, 2, 3, 4, 5, 6},
+			leafKeyVals: [][]treeVal{
+				makeTreeVal([]int{1}),
+				makeTreeVal([]int{2}),
+				makeTreeVal([]int{3}),
+				makeTreeVal([]int{4}),
+				makeTreeVal([]int{5, 6}),
+			},
+		},
+		{
+			nodesize:   4,
+			insertions: []int{1, 3, 5, 9, 10},
+			leafKeyVals: [][]treeVal{
+				makeTreeVal([]int{1, 3}),
+				makeTreeVal([]int{5, 9, 10}),
+			},
+		},
+		{
+			nodesize:   7,
+			insertions: sequentialUntil(13),
+			leafKeyVals: [][]treeVal{
+				makeTreeVal([]int{1, 2, 3}),
+				makeTreeVal([]int{4, 5, 6}),
+				makeTreeVal([]int{7, 8, 9}),
+				makeTreeVal([]int{10, 11, 12, 13}),
+			},
+		},
 	}
-	keys := makeTreeKey(ks)
-	for _, item := range keys {
-		assert.NoError(t, tr.insert(item, 1))
-	}
-	root := tr.root
-	assert.False(t, root.isLeafNode)
-	assert.Equal(t, 1, root.keySize)
+	for _, tc := range tcases {
+		tr := NewBtree(tc.nodesize)
+		for _, insertItem := range tc.insertions {
+			assert.NoError(t, tr.insert(treeKey{main: insertItem}, insertItem))
+		}
 
-	leftChild := root.children[0]
-	rightChild := root.children[1]
-	assert.Equal(t, treeKey{main: 5}, root.key[0])
-	leftData := leftChild.leafNode.data
-	rightData := rightChild.leafNode.data
-	assert.Equal(t, leftData[:leftChild.leafNode.size], makeTreeVal([]int{0, 1, 2, 3, 4}, 1))
-	assert.Equal(t, rightData[:rightChild.leafNode.size], makeTreeVal([]int{5, 6, 7, 8, 9, 10}, 1))
-	assert.Equal(t, &leftChild.leafNode, rightChild.leafNode.prev)
-	assert.Equal(t, &rightChild.leafNode, leftChild.leafNode.next)
+		cur := cursor{}
+		n := cur.searchLeafNode(tr, treeKey{main: -1})
+		assert.NotNil(t, n)
+		var (
+			prev    *leafNode
+			current = &n.leafNode
+		)
+		for idx := range tc.leafKeyVals {
+			expectVals := tc.leafKeyVals[idx]
+			if prev != nil {
+				assert.Equal(t, prev, current.prev)
+			}
+			assert.Equal(t, expectVals, current.data[:current.size])
+			assertNullVals(t, current.data[current.size:])
+			prev = current
+			current = current.next
+		}
+	}
+}
+func assertNullVals(t *testing.T, vals []treeVal) {
+	for _, item := range vals {
+		assert.Equal(t, treeVal{}, item)
+	}
 }
 
 func sequentialUntil(last int) []int {
 	ks := make([]int, 0, last)
-	for i := 0; i < last; i++ {
+	for i := 1; i < last+1; i++ {
 		ks = append(ks, i)
 	}
 	return ks

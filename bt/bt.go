@@ -6,10 +6,6 @@ import (
 	"sync"
 )
 
-const (
-	nodesize = 10
-)
-
 type treeVal struct {
 	key treeKey
 	val int
@@ -41,15 +37,15 @@ type leafNode struct {
 	mu   *sync.RWMutex
 	prev *leafNode
 	next *leafNode
-	data [nodesize]treeVal
+	data []treeVal
 	size int
 }
 
 type node struct {
 	level    int
 	mu       *sync.RWMutex
-	key      [nodesize]treeKey // pointer|key|pointer|key|pointer
-	children [nodesize + 1]*node
+	key      []treeKey // pointer|key|pointer|key|pointer
+	children []*node
 	keySize  int
 
 	leafNode   leafNode
@@ -57,16 +53,19 @@ type node struct {
 }
 
 type btree struct {
-	root *node
+	root     *node
+	nodesize int
 	// leftmostLeafNode  *leafNode
 	// rightmostLeafNode *leafNode
 }
 
-func NewBtree() *btree {
+func NewBtree(nsize int) *btree {
 	leaf := leafNode{
-		mu: &sync.RWMutex{},
+		mu:   &sync.RWMutex{},
+		data: make([]treeVal, nsize),
 	}
 	return &btree{
+		nodesize: nsize,
 		root: &node{
 			isLeafNode: true,
 			leafNode:   leaf,
@@ -82,7 +81,7 @@ func (t *btree) insert(key treeKey, val int) error {
 
 	// normal insertion
 	{
-		idx, exact := leaf.findIdxForKey(key)
+		idx, exact := t.findIdxForKey(leaf, key)
 		if exact {
 			return fmt.Errorf("duplicate key found %v", key)
 		}
@@ -94,7 +93,7 @@ func (t *btree) insert(key treeKey, val int) error {
 		leaf.size++
 	}
 
-	if leaf.size < nodesize {
+	if leaf.size < t.nodesize {
 		return nil
 	}
 	// 	idx, exact := leaf.findIdxForKey(key)
@@ -109,7 +108,7 @@ func (t *btree) insert(key treeKey, val int) error {
 	// 	leaf.size++
 	// 	return nil
 	// }
-	orphan, splitKey := leaf.splitNode()
+	orphan, splitKey := t.splitNode(leaf)
 	// comp := compareKey(key, splitKey)
 	// switch comp {
 	// case -1:
@@ -137,12 +136,12 @@ func (t *btree) insert(key treeKey, val int) error {
 			key:        splitKey,
 			rightChild: orphan,
 		})
-		if currentParent.keySize < nodesize {
+		if currentParent.keySize < t.nodesize {
 			return nil
 		}
 		// this parent is also full
 
-		newOrphan, newSplitKey := currentParent.splitNode()
+		newOrphan, newSplitKey := t.splitBranchNode(currentParent)
 
 		// let the next iteration handle this split with new parent propagated up the stack
 		orphan = newOrphan
@@ -151,9 +150,11 @@ func (t *btree) insert(key treeKey, val int) error {
 	// if reach this line, the higest level parent (root) has been recently split
 	firstChild := t.root
 	newRoot := &node{
-		level:   t.root.level + 1,
-		mu:      &sync.RWMutex{},
-		keySize: 0,
+		level:    t.root.level + 1,
+		mu:       &sync.RWMutex{},
+		keySize:  0,
+		children: make([]*node, t.nodesize+1),
+		key:      make([]treeKey, t.nodesize),
 	}
 	newRoot.children[0] = firstChild
 	// newRoot.key[0] = splitKey
@@ -178,8 +179,12 @@ func (c *cursor) searchLeafNode(t *btree, searchKey treeKey) *node {
 		_assert(curLevel > 0, "reached level 0 node but still have not found leaf node")
 		c.stack = append(c.stack, curNode)
 		pointerIdx := curNode.findPointerIdx(searchKey)
-		curNode = curNode.children[pointerIdx]
-		curLevel--
+		if curNode.children[pointerIdx] != nil {
+			curNode = curNode.children[pointerIdx]
+			curLevel--
+			continue
+		}
+		panic(fmt.Sprintf("cannot find correct node for key %v", searchKey))
 	}
 	return curNode
 }
@@ -197,40 +202,44 @@ func (n *node) _insertPointerAtIdx(idx int, orphan *orphanNode) {
 	n.keySize++
 }
 
-func (n *node) splitNode() (*node, treeKey) {
+func (t *btree) splitBranchNode(n *node) (*node, treeKey) {
 	newNode := &node{
-		mu:    &sync.RWMutex{},
-		level: n.level,
+		mu:       &sync.RWMutex{},
+		level:    n.level,
+		key:      make([]treeKey, t.nodesize),
+		children: make([]*node, t.nodesize+1),
 	}
-	idx := nodesize / 2 // right >= left
-	copy(newNode.key[:n.keySize-idx], n.key[idx:n.keySize])
-	copy(newNode.children[1:n.keySize-idx], n.children[idx+1:n.keySize])
-	newNode.keySize = n.keySize - idx
-	n.keySize = idx
+	idx := t.nodesize / 2 // right >= left
+	copy(newNode.key[:n.keySize-idx-1], n.key[idx+1:n.keySize])
+	copy(newNode.children[0:n.keySize-idx], n.children[idx+1:n.keySize+1])
+	newNode.keySize = n.keySize - idx - 1
 	for i := idx; i < n.keySize; i++ {
 		n.key[i] = treeKey{}
 	}
+
 	// left child will hold more children pointer
 	// p|1|p|2|p|3|p => p|1|p + p|2|p|3|p
-	for i := idx + 1; i < n.keySize; i++ {
+	for i := idx + 1; i < n.keySize+1; i++ {
 		n.children[i] = nil
 	}
 
+	n.keySize = idx
 	splitKey := newNode.key[0]
 	return newNode, splitKey
 }
 
 // splitKey returned to create new pointer entry on parent
-func (n *leafNode) splitNode() (*node, treeKey) {
+func (t *btree) splitNode(n *leafNode) (*node, treeKey) {
 	newnode := &node{
 		isLeafNode: true,
 		leafNode: leafNode{
-			mu: &sync.RWMutex{},
+			mu:   &sync.RWMutex{},
+			data: make([]treeVal, t.nodesize),
 		},
 	}
 	newLeaf := &newnode.leafNode
 
-	idx := nodesize / 2 // right >= left
+	idx := t.nodesize / 2 // right >= left
 	copy(newLeaf.data[:n.size-idx], n.data[idx:n.size])
 	// hacky empty values
 	for i := idx; i < n.size; i++ {
@@ -251,8 +260,8 @@ func (n *leafNode) splitNode() (*node, treeKey) {
 	return newnode, splitKey
 }
 
-func (n *leafNode) insertVal(val treeVal) error {
-	idx, exact := n.findIdxForKey(val.key)
+func (t *btree) insertVal(n *leafNode, val treeVal) error {
+	idx, exact := t.findIdxForKey(n, val.key)
 	if exact {
 		return fmt.Errorf("exact key has already exist")
 	}
@@ -262,8 +271,8 @@ func (n *leafNode) insertVal(val treeVal) error {
 	return nil
 }
 
-func (n *leafNode) findIdxForKey(newKey treeKey) (int, bool) {
-	_assert(n.size < nodesize, "findingIdx for new value is meaning less when the leaf node is full")
+func (t *btree) findIdxForKey(n *leafNode, newKey treeKey) (int, bool) {
+	_assert(n.size < t.nodesize, "findingIdx for new value is meaning less when the leaf node is full")
 	var (
 		exact bool
 	)
