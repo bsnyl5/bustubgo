@@ -84,6 +84,36 @@ func Test_btreeDelete(t *testing.T) {
 	tcases := []deleteTestCase{
 		{
 			nodesize:   3,
+			insertions: sequentialUntil(5),
+			deletions:  []int{2},
+			rootKeys:   makeTreeKey([]int{3, 4}),
+			leafKeyVals: [][]treeVal{
+				makeTreeVal([]int{1}),
+				makeTreeVal([]int{3}),
+				makeTreeVal([]int{4, 5}),
+			},
+		},
+		{
+			nodesize:   3,
+			insertions: []int{1, 2, 3},
+			deletions:  []int{2, 1},
+			rootKeys:   makeTreeKey([]int{3}),
+			leafKeyVals: [][]treeVal{
+				makeTreeVal([]int{3}),
+			},
+		},
+		{
+			nodesize:   3,
+			insertions: []int{1, 2, 3},
+			deletions:  []int{1},
+			rootKeys:   makeTreeKey([]int{3}),
+			leafKeyVals: [][]treeVal{
+				makeTreeVal([]int{2}),
+				makeTreeVal([]int{3}),
+			},
+		},
+		{
+			nodesize:   3,
 			insertions: invertedSequentialUntil(10),
 			deletions:  []int{10, 9, 8},
 			rootKeys:   makeTreeKey([]int{5}),

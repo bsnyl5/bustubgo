@@ -228,25 +228,26 @@ func (t *btree) borrowRightForLeft(par *node, leftIdx int, left, right *node) {
 	par.key[leftIdx] = rightFirstKey
 }
 
-func (t *btree) leafBorrowRightForLeft(par *node, leftIdx int, left, right *node) {
+func (t *btree) leafBorrowRightForLeft(par *node, leftIdx int, leftOuter, rightOuter *node) {
+	left, right := &leftOuter.leafNode, &rightOuter.leafNode
 	// prepend current key to current parent
 
-	rightFirstKey := right.leafNode.data[0]
+	rightFirstKey := right.data[0]
 
 	// transfer right's first data to left
-	left.leafNode.data[left.keySize] = rightFirstKey
+	left.data[left.size] = rightFirstKey
 
 	// bring right cousin first pointer to current parent last pointer
 	// left.children[left.keySize+1] = right.children[0]
-	left.leafNode.size++
+	left.size++
 
 	// shrink right cousin to the left
-	copy(right.key[:right.leafNode.size-1], right.key[1:right.leafNode.size])
-	right.leafNode.data[right.leafNode.size-1] = treeVal{}
+	copy(right.data[:right.size-1], right.data[1:right.size])
+	right.data[right.size-1] = treeVal{}
 	// copy(right.children[:right.keySize], right.children[1:right.keySize+1])
 	// right.children[right.keySize+1] = nil
-	right.leafNode.size--
-	newRightFirstKey := right.leafNode.data[0]
+	right.size--
+	newRightFirstKey := right.data[0]
 
 	// new split key = right cousin (old) first key
 	par.key[leftIdx] = newRightFirstKey.key
