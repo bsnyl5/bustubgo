@@ -267,7 +267,7 @@ func (t *btree) leafBorrowLeftForRight(par *node, rightIdx int, leftOuter, right
 	left.size--
 
 	// replace parent entry with the value of last key
-	par.key[rightIdx-1] = left.data[0].key
+	par.key[rightIdx-1] = right.data[0].key
 }
 
 // TODO: make direction generic
@@ -279,7 +279,7 @@ func (t *btree) borrowLeftForRight(par *node, rightIdx int, left, right *node) {
 	_assert(n == right.keySize, "copy key failed")
 	right.key[0] = splitKey
 
-	n = copy(right.children[1:right.keySize+1], right.children[:right.keySize+1])
+	n = copy(right.children[1:right.keySize+2], right.children[:right.keySize+1])
 	_assert(n == right.keySize+1, "copy key failed")
 	right.keySize++
 
@@ -292,7 +292,7 @@ func (t *btree) borrowLeftForRight(par *node, rightIdx int, left, right *node) {
 	left.keySize--
 
 	// replace parent entry with the value of last key
-	par.key[rightIdx] = lastKey
+	par.key[rightIdx-1] = lastKey
 }
 
 func (t *btree) mergeLeafNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
