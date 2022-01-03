@@ -77,20 +77,40 @@ func Test_btreeDelete(t *testing.T) {
 	type deleteTestCase struct {
 		insertions  []int
 		deletions   []int
+		rootKeys    []treeKey
 		leafKeyVals [][]treeVal
 		nodesize    int
 	}
 	tcases := []deleteTestCase{
+		// {
+		// 	nodesize:   3,
+		// 	insertions: []int{1, 2, 3, 4, 5, 6},
+		// 	deletions:  []int{2},
+		// 	rootKeys:   makeTreeKey([]int{4}),
+		// 	leafKeyVals: [][]treeVal{
+		// 		makeTreeVal([]int{1}),
+		// 		makeTreeVal([]int{3}),
+		// 		makeTreeVal([]int{4}),
+		// 		makeTreeVal([]int{5, 6}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   3,
+		// 	rootKeys:   makeTreeKey([]int{2}),
+		// 	insertions: []int{1, 2, 3, 4, 5},
+		// 	deletions:  []int{5, 4, 3},
+		// 	leafKeyVals: [][]treeVal{
+		// 		makeTreeVal([]int{1}),
+		// 		makeTreeVal([]int{2}),
+		// 	},
+		// },
 		{
 			nodesize:   3,
 			insertions: []int{1, 2, 3, 4, 5},
-			deletions:  []int{5, 4},
+			deletions:  []int{5, 4, 3, 2},
+			rootKeys:   makeTreeKey([]int{1}),
 			leafKeyVals: [][]treeVal{
 				makeTreeVal([]int{1}),
-				makeTreeVal([]int{2}),
-				makeTreeVal([]int{3}),
-				// makeTreeVal([]int{4}),
-				// makeTreeVal([]int{5}),
 			},
 		},
 	}
@@ -103,12 +123,18 @@ func Test_btreeDelete(t *testing.T) {
 			assert.NoError(t, tr.delete(treeKey{main: deleteItem}))
 		}
 
+		root := tr.root
+		if root.isLeafNode {
+			assert.Equal(t, tc.rootKeys, keysFromVals(root.leafNode.data[:root.leafNode.size]))
+		} else {
+			assert.Equal(t, tc.rootKeys, root.key[:root.keySize])
+		}
 		cur := cursor{}
 		n := cur.searchLeafNode(tr, treeKey{main: -1})
 		assert.NotNil(t, n)
 		var (
 			prev    *leafNode
-			current = &n.leafNode
+			current = &n.node.leafNode
 		)
 		for idx := range tc.leafKeyVals {
 			expectVals := tc.leafKeyVals[idx]
@@ -179,7 +205,7 @@ func Test_btreeInsert(t *testing.T) {
 		assert.NotNil(t, n)
 		var (
 			prev    *leafNode
-			current = &n.leafNode
+			current = &n.node.leafNode
 		)
 		for idx := range tc.leafKeyVals {
 			expectVals := tc.leafKeyVals[idx]
@@ -203,6 +229,13 @@ func sequentialUntil(last int) []int {
 	ks := make([]int, 0, last)
 	for i := 1; i < last+1; i++ {
 		ks = append(ks, i)
+	}
+	return ks
+}
+
+func keysFromVals(vals []treeVal) (ks []treeKey) {
+	for _, item := range vals {
+		ks = append(ks, item.key)
 	}
 	return ks
 }

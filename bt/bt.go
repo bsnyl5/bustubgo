@@ -82,20 +82,19 @@ func _leafNodeRemove(n *leafNode, idx int) {
 func (t *btree) delete(key treeKey) error {
 	curs := cursor{}
 	// cur.stack from root -> nearest parent
-	n := curs.searchLeafNode(t, key)
+	leafInfo := curs.searchLeafNode(t, key)
+	n := leafInfo.node
 	leaf := &n.leafNode
 
 	// normal deletion
-	{
-		idx, exact := t.findIdxForKey(leaf, key)
-		if !exact {
-			return fmt.Errorf("key %v does not exist", key)
-		}
-		_leafNodeRemove(&n.leafNode, idx)
+	idx, exact := t.findIdxForKey(leaf, key)
+	if !exact {
+		return fmt.Errorf("key %v does not exist", key)
 	}
+	_leafNodeRemove(&n.leafNode, idx)
 	if n.leafNode.size < t.nodesize/2 {
 		parInfo, ok := curs.popNext()
-		thisNodeIdx := parInfo.idx
+		thisNodeIdx := leafInfo.idx
 		// n has no parent which means n is a root+leaf node
 		if !ok {
 			return nil
@@ -107,16 +106,18 @@ func (t *btree) delete(key treeKey) error {
 			return nil
 		}
 
+		var maybeNewRoot *node
 		// must merge with either previous or next cousins
 		if thisNodeIdx > 0 {
 			t.mergeLeafNodeRightToLeft(par, thisNodeIdx, par.children[thisNodeIdx-1], n)
+			maybeNewRoot = par.children[thisNodeIdx-1]
 		} else if thisNodeIdx < par.keySize {
-			t.mergeLeafNodeRightToLeft(par, thisNodeIdx, n, par.children[thisNodeIdx+1])
+			t.mergeLeafNodeRightToLeft(par, thisNodeIdx+1, n, par.children[thisNodeIdx+1])
+			maybeNewRoot = n
 		} else {
 			_assert(false, "should not reach here")
 		}
 
-		var maybeNewRoot *node
 		curBranch := par
 		refIdx := parInfo.idx
 		// for parInCursor, ok := curs.popNext(); ok && curBranch.keySize < t.nodesize/2; {
@@ -145,7 +146,7 @@ func (t *btree) delete(key treeKey) error {
 				t.mergeBranchNodeRightToLeft(newPar, refIdx, newPar.children[refIdx-1], curBranch)
 				maybeNewRoot = newPar.children[refIdx-1]
 			} else if refIdx < newPar.keySize {
-				t.mergeBranchNodeRightToLeft(newPar, refIdx, curBranch, newPar.children[refIdx+1])
+				t.mergeBranchNodeRightToLeft(newPar, refIdx+1, curBranch, newPar.children[refIdx+1])
 				maybeNewRoot = curBranch
 			} else {
 				_assert(false, "should not reach here")
@@ -162,18 +163,18 @@ func (t *btree) delete(key treeKey) error {
 func (t *btree) _tryBorrowLeafKey(newPar *node, refIdx int, curBranch *node) bool {
 	if refIdx > 0 {
 		left := newPar.children[refIdx-1]
-		if left.leafNode.size-1 >= t.nodesize/2 {
+		if left.leafNode.size > t.nodesize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
-			t.borrowLeftForRight(newPar, refIdx, left, curBranch)
+			t.leafBorrowLeftForRight(newPar, refIdx, left, curBranch)
 			return true
 		}
 		// try borrow from prev cousin
 	}
 	if refIdx < newPar.keySize {
 		right := newPar.children[refIdx+1]
-		if right.leafNode.size-1 >= t.nodesize/2 {
+		if right.leafNode.size > t.nodesize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
-			t.borrowRightForLeft(newPar, refIdx, curBranch, right)
+			t.leafBorrowRightForLeft(newPar, refIdx, curBranch, right)
 			return true
 		}
 		// try borrow from next cousin
@@ -184,7 +185,7 @@ func (t *btree) _tryBorrowLeafKey(newPar *node, refIdx int, curBranch *node) boo
 func (t *btree) _tryBorrowBranchKey(newPar *node, refIdx int, curBranch *node) bool {
 	if refIdx > 0 {
 		left := newPar.children[refIdx-1]
-		if left.leafNode.size-1 >= t.nodesize/2 {
+		if left.keySize > t.nodesize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
 			t.borrowLeftForRight(newPar, refIdx, left, curBranch)
 			return true
@@ -193,7 +194,7 @@ func (t *btree) _tryBorrowBranchKey(newPar *node, refIdx int, curBranch *node) b
 	}
 	if refIdx < newPar.keySize {
 		right := newPar.children[refIdx+1]
-		if right.leafNode.size-1 >= t.nodesize/2 {
+		if right.keySize > t.nodesize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
 			t.borrowRightForLeft(newPar, refIdx, curBranch, right)
 			return true
@@ -204,9 +205,9 @@ func (t *btree) _tryBorrowBranchKey(newPar *node, refIdx int, curBranch *node) b
 	return false
 }
 
-func (t *btree) borrowRightForLeft(par *node, splitIdx int, left, right *node) {
+func (t *btree) borrowRightForLeft(par *node, leftIdx int, left, right *node) {
 	// prepend current key to current parent
-	splitKey := par.key[splitIdx]
+	splitKey := par.key[leftIdx]
 
 	// n := copy(right.key[1:right.keySize+1], right.key[:right.keySize])
 	left.key[left.keySize] = splitKey
@@ -214,70 +215,65 @@ func (t *btree) borrowRightForLeft(par *node, splitIdx int, left, right *node) {
 	// bring right cousin first pointer to current parent last pointer
 	left.children[left.keySize+1] = right.children[0]
 	left.keySize++
-	leftFirstKey := left.key[0]
+	rightFirstKey := right.key[0]
 
 	// shrink right cousin to the left
 	copy(right.key[:right.keySize-1], right.key[1:right.keySize])
-	right.key[right.keySize] = treeKey{}
+	right.key[right.keySize-1] = treeKey{}
 	copy(right.children[:right.keySize], right.children[1:right.keySize+1])
-	right.children[right.keySize+1] = nil
+	right.children[right.keySize] = nil
 	right.keySize--
 
 	// new split key = right cousin (old) first key
-	par.key[splitIdx] = leftFirstKey
+	par.key[leftIdx] = rightFirstKey
 }
 
-func (t *btree) leafBorrowRightForLeft(par *node, splitIdx int, left, right *node) {
+func (t *btree) leafBorrowRightForLeft(par *node, leftIdx int, left, right *node) {
 	// prepend current key to current parent
-	splitKey := par.key[splitIdx]
 
-	// n := copy(right.key[1:right.keySize+1], right.key[:right.keySize])
-	left.key[left.keySize] = splitKey
+	rightFirstKey := right.leafNode.data[0]
+
+	// transfer right's first data to left
+	left.leafNode.data[left.keySize] = rightFirstKey
 
 	// bring right cousin first pointer to current parent last pointer
-	left.children[left.keySize+1] = right.children[0]
-	left.keySize++
-	leftFirstKey := left.key[0]
+	// left.children[left.keySize+1] = right.children[0]
+	left.leafNode.size++
 
 	// shrink right cousin to the left
-	copy(right.key[:right.keySize-1], right.key[1:right.keySize])
-	right.key[right.keySize] = treeKey{}
-	copy(right.children[:right.keySize], right.children[1:right.keySize+1])
-	right.children[right.keySize+1] = nil
-	right.keySize--
+	copy(right.key[:right.leafNode.size-1], right.key[1:right.leafNode.size])
+	right.leafNode.data[right.leafNode.size-1] = treeVal{}
+	// copy(right.children[:right.keySize], right.children[1:right.keySize+1])
+	// right.children[right.keySize+1] = nil
+	right.leafNode.size--
+	newRightFirstKey := right.leafNode.data[0]
 
 	// new split key = right cousin (old) first key
-	par.key[splitIdx] = leftFirstKey
+	par.key[leftIdx] = newRightFirstKey.key
 }
 
-func (t *btree) leafBorrowLeftForRight(par *node, splitIdx int, left, right *node) {
+func (t *btree) leafBorrowLeftForRight(par *node, rightIdx int, leftOuter, rightOuter *node) {
+	left, right := &leftOuter.leafNode, &rightOuter.leafNode
 	// prepend current key to current parent
-	splitKey := par.key[splitIdx]
+	leftLastKey := left.data[left.size-1]
 
-	n := copy(right.key[1:right.keySize+1], right.key[:right.keySize])
-	_assert(n == right.keySize, "copy key failed")
-	right.key[0] = splitKey
+	n := copy(right.data[1:right.size+1], right.data[:right.size])
+	_assert(n == right.size, "copy key failed")
+	right.data[0] = leftLastKey
 
-	n = copy(right.children[1:right.keySize+1], right.children[:right.keySize+1])
-	_assert(n == right.keySize+1, "copy key failed")
-	right.keySize++
+	right.size++
 
-	// bring left cousin last pointer to current parent first pointer
-	right.children[0] = left.children[left.keySize+1]
-	// delete left cousin last pointer (n+1), last key (n)
-	left.children[left.keySize+1] = nil
-	lastKey := left.key[left.keySize]
-	left.key[left.keySize] = treeKey{}
-	left.keySize--
+	left.data[left.size-1] = treeVal{}
+	left.size--
 
 	// replace parent entry with the value of last key
-	par.key[splitIdx] = lastKey
+	par.key[rightIdx-1] = left.data[0].key
 }
 
 // TODO: make direction generic
-func (t *btree) borrowLeftForRight(par *node, splitIdx int, left, right *node) {
+func (t *btree) borrowLeftForRight(par *node, rightIdx int, left, right *node) {
 	// prepend current key to current parent
-	splitKey := par.key[splitIdx]
+	splitKey := par.key[rightIdx-1]
 
 	n := copy(right.key[1:right.keySize+1], right.key[:right.keySize])
 	_assert(n == right.keySize, "copy key failed")
@@ -288,19 +284,19 @@ func (t *btree) borrowLeftForRight(par *node, splitIdx int, left, right *node) {
 	right.keySize++
 
 	// bring left cousin last pointer to current parent first pointer
-	right.children[0] = left.children[left.keySize+1]
+	right.children[0] = left.children[left.keySize]
 	// delete left cousin last pointer (n+1), last key (n)
-	left.children[left.keySize+1] = nil
-	lastKey := left.key[left.keySize]
-	left.key[left.keySize] = treeKey{}
+	left.children[left.keySize] = nil
+	lastKey := left.key[left.keySize-1]
+	left.key[left.keySize-1] = treeKey{}
 	left.keySize--
 
 	// replace parent entry with the value of last key
-	par.key[splitIdx] = lastKey
+	par.key[rightIdx] = lastKey
 }
 
-func (t *btree) mergeLeafNodeRightToLeft(par *node, childSplitIdx int, left, right *node) {
-	keySplitIdx := childSplitIdx - 1
+func (t *btree) mergeLeafNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
+	keySplitIdx := rightPointerIdx - 1
 	// left values + right values
 	high, low := left.leafNode.size, left.leafNode.size+right.leafNode.size
 	n := copy(left.leafNode.data[high:low], right.leafNode.data[:right.leafNode.size])
@@ -308,12 +304,15 @@ func (t *btree) mergeLeafNodeRightToLeft(par *node, childSplitIdx int, left, rig
 	left.leafNode.size += right.leafNode.size
 
 	copy(par.key[keySplitIdx:par.keySize-1], par.key[keySplitIdx+1:par.keySize])
-	copy(par.children[childSplitIdx:par.keySize], par.children[childSplitIdx+1:par.keySize+1])
+	copy(par.children[rightPointerIdx:par.keySize], par.children[rightPointerIdx+1:par.keySize+1])
 	// empty last key because of shrink
 	par.key[par.keySize-1] = treeKey{}
 	par.children[par.keySize] = nil
 	par.keySize--
 	left.leafNode.next = right.leafNode.next
+	if right.leafNode.next != nil {
+		right.leafNode.next.prev = &left.leafNode
+	}
 }
 
 // TODO: write test
@@ -334,14 +333,14 @@ func (t *btree) mergeLeafNodeRightToLeft(par *node, childSplitIdx int, left, rig
 // 			root:2            3
 // 		|  				|	 	 		|
 // 		1 				2				3
-func (t *btree) mergeBranchNodeRightToLeft(par *node, parentRefIdx int, left, right *node) {
+func (t *btree) mergeBranchNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
 	// left pointers + right pointers
 	high, low := left.keySize+1, left.keySize+1+right.keySize+1
 	n := copy(left.children[high:low], right.children[:right.keySize+1])
 	_assert(n == right.keySize+1, "copy failed")
 
-	toDeletedKeyIdx := parentRefIdx - 1
-	toDeletedChildIdx := parentRefIdx
+	toDeletedKeyIdx := rightPointerIdx - 1
+	toDeletedChildIdx := rightPointerIdx
 	splitKey := par.key[toDeletedKeyIdx]
 
 	// left keys + split keys + right keys
@@ -364,7 +363,8 @@ func (t *btree) mergeBranchNodeRightToLeft(par *node, parentRefIdx int, left, ri
 func (t *btree) insert(key treeKey, val int) error {
 	cur := cursor{}
 	// cur.stack from root -> nearest parent
-	n := cur.searchLeafNode(t, key)
+	leafInfo := cur.searchLeafNode(t, key)
+	n := leafInfo.node
 	leaf := &n.leafNode
 
 	// normal insertion
@@ -452,7 +452,7 @@ func (c *cursor) popNext() (cursorInfo, bool) {
 }
 
 // TODO: add some cursor to manage lock
-func (c *cursor) searchLeafNode(t *btree, searchKey treeKey) *node {
+func (c *cursor) searchLeafNode(t *btree, searchKey treeKey) cursorInfo {
 	_assert(len(c.stack) == 0, "length of cursor is not cleaned up")
 	var curNode = t.root
 	curLevel := t.root.level
@@ -471,7 +471,10 @@ func (c *cursor) searchLeafNode(t *btree, searchKey treeKey) *node {
 		}
 		panic(fmt.Sprintf("cannot find correct node for key %v", searchKey))
 	}
-	return curNode
+	return cursorInfo{
+		node: curNode,
+		idx:  pointerIdx,
+	}
 }
 
 type orphanNode struct {
