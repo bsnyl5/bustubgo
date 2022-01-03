@@ -71,12 +71,64 @@ func Test_searchIdx(t *testing.T) {
 		assert.Equal(t, tcase.expect, idx)
 	}
 }
+func Test_btreeDelete(t *testing.T) {
+
+	// cur.stack from root -> nearest parent
+	type deleteTestCase struct {
+		insertions  []int
+		deletions   []int
+		leafKeyVals [][]treeVal
+		nodesize    int
+	}
+	tcases := []deleteTestCase{
+		{
+			nodesize:   3,
+			insertions: []int{1, 2, 3, 4, 5},
+			deletions:  []int{5, 4},
+			leafKeyVals: [][]treeVal{
+				makeTreeVal([]int{1}),
+				makeTreeVal([]int{2}),
+				makeTreeVal([]int{3}),
+				// makeTreeVal([]int{4}),
+				// makeTreeVal([]int{5}),
+			},
+		},
+	}
+	for _, tc := range tcases {
+		tr := NewBtree(tc.nodesize)
+		for _, insertItem := range tc.insertions {
+			assert.NoError(t, tr.insert(treeKey{main: insertItem}, insertItem))
+		}
+		for _, deleteItem := range tc.deletions {
+			assert.NoError(t, tr.delete(treeKey{main: deleteItem}))
+		}
+
+		cur := cursor{}
+		n := cur.searchLeafNode(tr, treeKey{main: -1})
+		assert.NotNil(t, n)
+		var (
+			prev    *leafNode
+			current = &n.leafNode
+		)
+		for idx := range tc.leafKeyVals {
+			expectVals := tc.leafKeyVals[idx]
+			if prev != nil {
+				assert.Equal(t, prev, current.prev)
+			}
+			assert.Equal(t, expectVals, current.data[:current.size])
+			assertNullVals(t, current.data[current.size:])
+			prev = current
+			current = current.next
+		}
+	}
+}
 
 func Test_btreeInsert(t *testing.T) {
 
 	// cur.stack from root -> nearest parent
 	type insertTestCase struct {
 		insertions  []int
+		rootKeys    []treeKey
 		leafKeyVals [][]treeVal
 		nodesize    int
 	}
@@ -84,6 +136,7 @@ func Test_btreeInsert(t *testing.T) {
 		{
 			nodesize:   3,
 			insertions: []int{1, 2, 3, 4, 5, 6},
+			rootKeys:   makeTreeKey([]int{3}),
 			leafKeyVals: [][]treeVal{
 				makeTreeVal([]int{1}),
 				makeTreeVal([]int{2}),
@@ -95,6 +148,7 @@ func Test_btreeInsert(t *testing.T) {
 		{
 			nodesize:   4,
 			insertions: []int{1, 3, 5, 9, 10},
+			rootKeys:   makeTreeKey([]int{5}),
 			leafKeyVals: [][]treeVal{
 				makeTreeVal([]int{1, 3}),
 				makeTreeVal([]int{5, 9, 10}),
@@ -103,6 +157,7 @@ func Test_btreeInsert(t *testing.T) {
 		{
 			nodesize:   7,
 			insertions: sequentialUntil(13),
+			rootKeys:   makeTreeKey([]int{4, 7, 10}),
 			leafKeyVals: [][]treeVal{
 				makeTreeVal([]int{1, 2, 3}),
 				makeTreeVal([]int{4, 5, 6}),
@@ -116,6 +171,8 @@ func Test_btreeInsert(t *testing.T) {
 		for _, insertItem := range tc.insertions {
 			assert.NoError(t, tr.insert(treeKey{main: insertItem}, insertItem))
 		}
+		root := tr.root
+		assert.Equal(t, tc.rootKeys, root.key[:root.keySize])
 
 		cur := cursor{}
 		n := cur.searchLeafNode(tr, treeKey{main: -1})
