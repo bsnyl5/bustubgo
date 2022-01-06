@@ -1,6 +1,7 @@
-package bt
+package bt2
 
 import (
+	"buff"
 	"fmt"
 	"sort"
 	"sync"
@@ -52,24 +53,27 @@ type node struct {
 	isLeafNode bool
 }
 
-type btree struct {
+type btreeCursor struct {
 	root     *node
 	nodesize int
+	bpm      *buff.BufferPool
+	_header  *headerPage
 	// leftmostLeafNode  *leafNode
 	// rightmostLeafNode *leafNode
 }
 
-func NewBtree(nsize int) *btree {
-	leaf := leafNode{
-		mu:   &sync.RWMutex{},
-		data: make([]treeVal, nsize),
+func NewBtree(filepath string, nsize int) *btreeCursor {
+	disk := buff.NewDiskManager(filepath)
+	bpm := buff.NewBufferPool(30, disk)
+	header, err := bpm.FetchPage(0)
+	if err != nil {
+		panic(err)
 	}
-	return &btree{
+	headerPage := castHeaderPage(header.GetData())
+	return &btreeCursor{
 		nodesize: nsize,
-		root: &node{
-			isLeafNode: true,
-			leafNode:   leaf,
-		},
+		bpm:      bpm,
+		_header:  headerPage,
 	}
 }
 
@@ -79,7 +83,7 @@ func _leafNodeRemove(n *leafNode, idx int) {
 	n.size--
 }
 
-func (t *btree) delete(key treeKey) error {
+func (t *btreeCursor) delete(key treeKey) error {
 	curs := cursor{}
 	// cur.stack from root -> nearest parent
 	leafInfo := curs.searchLeafNode(t, key)
@@ -160,7 +164,7 @@ func (t *btree) delete(key treeKey) error {
 	return nil
 }
 
-func (t *btree) _tryBorrowLeafKey(newPar *node, refIdx int, curBranch *node) bool {
+func (t *btreeCursor) _tryBorrowLeafKey(newPar *node, refIdx int, curBranch *node) bool {
 	if refIdx > 0 {
 		left := newPar.children[refIdx-1]
 		if left.leafNode.size > t.nodesize/2 {
@@ -182,7 +186,7 @@ func (t *btree) _tryBorrowLeafKey(newPar *node, refIdx int, curBranch *node) boo
 	return false
 }
 
-func (t *btree) _tryBorrowBranchKey(newPar *node, refIdx int, curBranch *node) bool {
+func (t *btreeCursor) _tryBorrowBranchKey(newPar *node, refIdx int, curBranch *node) bool {
 	if refIdx > 0 {
 		left := newPar.children[refIdx-1]
 		if left.keySize > t.nodesize/2 {
@@ -205,7 +209,7 @@ func (t *btree) _tryBorrowBranchKey(newPar *node, refIdx int, curBranch *node) b
 	return false
 }
 
-func (t *btree) borrowRightForLeft(par *node, leftIdx int, left, right *node) {
+func (t *btreeCursor) borrowRightForLeft(par *node, leftIdx int, left, right *node) {
 	// prepend current key to current parent
 	splitKey := par.key[leftIdx]
 
@@ -228,7 +232,7 @@ func (t *btree) borrowRightForLeft(par *node, leftIdx int, left, right *node) {
 	par.key[leftIdx] = rightFirstKey
 }
 
-func (t *btree) leafBorrowRightForLeft(par *node, leftIdx int, leftOuter, rightOuter *node) {
+func (t *btreeCursor) leafBorrowRightForLeft(par *node, leftIdx int, leftOuter, rightOuter *node) {
 	left, right := &leftOuter.leafNode, &rightOuter.leafNode
 	// prepend current key to current parent
 
@@ -253,7 +257,7 @@ func (t *btree) leafBorrowRightForLeft(par *node, leftIdx int, leftOuter, rightO
 	par.key[leftIdx] = newRightFirstKey.key
 }
 
-func (t *btree) leafBorrowLeftForRight(par *node, rightIdx int, leftOuter, rightOuter *node) {
+func (t *btreeCursor) leafBorrowLeftForRight(par *node, rightIdx int, leftOuter, rightOuter *node) {
 	left, right := &leftOuter.leafNode, &rightOuter.leafNode
 	// prepend current key to current parent
 	leftLastKey := left.data[left.size-1]
@@ -272,7 +276,7 @@ func (t *btree) leafBorrowLeftForRight(par *node, rightIdx int, leftOuter, right
 }
 
 // TODO: make direction generic
-func (t *btree) borrowLeftForRight(par *node, rightIdx int, left, right *node) {
+func (t *btreeCursor) borrowLeftForRight(par *node, rightIdx int, left, right *node) {
 	// prepend current key to current parent
 	splitKey := par.key[rightIdx-1]
 
@@ -296,7 +300,7 @@ func (t *btree) borrowLeftForRight(par *node, rightIdx int, left, right *node) {
 	par.key[rightIdx-1] = lastKey
 }
 
-func (t *btree) mergeLeafNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
+func (t *btreeCursor) mergeLeafNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
 	keySplitIdx := rightPointerIdx - 1
 	// left values + right values
 	high, low := left.leafNode.size, left.leafNode.size+right.leafNode.size
@@ -333,7 +337,7 @@ func (t *btree) mergeLeafNodeRightToLeft(par *node, rightPointerIdx int, left, r
 // 			root:2            3
 // 		|  				|	 	 		|
 // 		1 				2				3
-func (t *btree) mergeBranchNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
+func (t *btreeCursor) mergeBranchNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
 	// left pointers + right pointers
 	high, low := left.keySize+1, left.keySize+1+right.keySize+1
 	n := copy(left.children[high:low], right.children[:right.keySize+1])
@@ -360,7 +364,7 @@ func (t *btree) mergeBranchNodeRightToLeft(par *node, rightPointerIdx int, left,
 	par.keySize--
 }
 
-func (t *btree) insert(key treeKey, val int) error {
+func (t *btreeCursor) insert(key treeKey, val int) error {
 	cur := cursor{}
 	// cur.stack from root -> nearest parent
 	leafInfo := cur.searchLeafNode(t, key)
@@ -452,7 +456,7 @@ func (c *cursor) popNext() (cursorInfo, bool) {
 }
 
 // TODO: add some cursor to manage lock
-func (c *cursor) searchLeafNode(t *btree, searchKey treeKey) cursorInfo {
+func (c *cursor) searchLeafNode(t *btreeCursor, searchKey treeKey) cursorInfo {
 	_assert(len(c.stack) == 0, "length of cursor is not cleaned up")
 	var curNode = t.root
 	curLevel := t.root.level
@@ -490,7 +494,7 @@ func (n *node) _insertPointerAtIdx(idx int, orphan *orphanNode) {
 	n.keySize++
 }
 
-func (t *btree) splitBranchNode(n *node) (*node, treeKey) {
+func (t *btreeCursor) splitBranchNode(n *node) (*node, treeKey) {
 	newLeftNode := &node{
 		mu:       &sync.RWMutex{},
 		level:    n.level,
@@ -517,7 +521,7 @@ func (t *btree) splitBranchNode(n *node) (*node, treeKey) {
 }
 
 // splitKey returned to create new pointer entry on parent
-func (t *btree) splitNode(n *leafNode) (*node, treeKey) {
+func (t *btreeCursor) splitNode(n *leafNode) (*node, treeKey) {
 	newnode := &node{
 		isLeafNode: true,
 		leafNode: leafNode{
@@ -548,7 +552,7 @@ func (t *btree) splitNode(n *leafNode) (*node, treeKey) {
 	return newnode, splitKey
 }
 
-func (t *btree) insertVal(n *leafNode, val treeVal) error {
+func (t *btreeCursor) insertVal(n *leafNode, val treeVal) error {
 	idx, exact := t.findIdxForKey(n, val.key)
 	if exact {
 		return fmt.Errorf("exact key has already exist")
@@ -559,7 +563,7 @@ func (t *btree) insertVal(n *leafNode, val treeVal) error {
 	return nil
 }
 
-func (t *btree) findIdxForKey(n *leafNode, newKey treeKey) (int, bool) {
+func (t *btreeCursor) findIdxForKey(n *leafNode, newKey treeKey) (int, bool) {
 	_assert(n.size < t.nodesize, "findingIdx for new value is meaning less when the leaf node is full")
 	var (
 		exact bool
