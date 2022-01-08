@@ -9,7 +9,7 @@ type Replacer interface {
 	// return evicted frameID if found
 	Victim() (int, bool)
 
-	// frameID should not  be victimized until unpin
+	// frameID should not be victimized until unpin
 	Pin(frameID int)
 
 	// allow frame to be victimizedable

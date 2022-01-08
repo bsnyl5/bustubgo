@@ -16,7 +16,7 @@ type treeKey struct {
 	sub  int // for duplicate key, inject a value to make it unique
 }
 
-func compareKey(k1, k2 treeKey) int {
+func compareKey(k1, k2 keyT) int {
 	if k1.main != k2.main {
 		ret := -1
 		if k1.main > k2.main {
@@ -46,18 +46,17 @@ type node struct {
 	level    int
 	mu       *sync.RWMutex
 	key      []treeKey // pointer|key|pointer|key|pointer
-	children []*node
-	keySize  int
+	children []*genericNode
+	size     int
 
 	leafNode   leafNode
 	isLeafNode bool
 }
 
 type btreeCursor struct {
-	root     *node
-	nodesize int
-	bpm      *buff.BufferPool
-	_header  *headerPage
+	root    *genericNode
+	bpm     *buff.BufferPool
+	_header *headerPage
 	// leftmostLeafNode  *leafNode
 	// rightmostLeafNode *leafNode
 }
@@ -71,52 +70,84 @@ func NewBtree(filepath string, nsize int) *btreeCursor {
 	}
 	headerPage := castHeaderPage(header.GetData())
 	return &btreeCursor{
-		nodesize: nsize,
-		bpm:      bpm,
-		_header:  headerPage,
+		bpm:     bpm,
+		_header: headerPage,
 	}
 }
 
-func _leafNodeRemove(n *leafNode, idx int) {
-	copy(n.data[idx:n.size], n.data[idx+1:n.size])
-	n.data[n.size-1] = treeVal{}
+func _leafNodeRemove(n *genericNode, idx int) {
+	copy(n.datas[idx:n.size], n.datas[idx+1:n.size])
+	n.datas[n.size-1] = valT{}
 	n.size--
 }
+func (t *tx) addFlush(pageID nodeID) {
+	t.tobeFlushed = append(t.tobeFlushed, pageID)
+}
+func (t *tx) addUnpin(pageID nodeID) {
+	t.tobeCleaned = append(t.tobeCleaned, pageID)
+}
+func (t *tx) unpinPages(bpm *buff.BufferPool) {
+	for _, pageID := range t.tobeCleaned {
+		bpm.UnpinPage(int(pageID), true)
+	}
+}
 
-func (t *btreeCursor) delete(key treeKey) error {
-	curs := cursor{}
+func (t *btreeCursor) delete(key keyT) error {
+	curs := tx{}
 	// cur.stack from root -> nearest parent
-	leafInfo := curs.searchLeafNode(t, key)
-	n := leafInfo.node
-	leaf := &n.leafNode
+	err := curs.searchLeafNode(t, key)
+	if err != nil {
+		return fmt.Errorf("searchLeafNode error: %v", err)
+	}
+	defer curs.unpinPages(t.bpm)
+
+	breadCrumb, ok := curs.popNext()
+	if !ok {
+		return fmt.Errorf("no reached")
+	}
+	n := breadCrumb.node
 
 	// normal deletion
-	idx, exact := t.findIdxForKey(leaf, key)
+	idx, exact := t.leafNodeFindKeySlot(n, key)
 	if !exact {
 		return fmt.Errorf("key %v does not exist", key)
 	}
-	_leafNodeRemove(&n.leafNode, idx)
-	if n.leafNode.size < t.nodesize/2 {
+	_leafNodeRemove(n, idx)
+	if n.size < t._header.nodeSize/2 {
 		parInfo, ok := curs.popNext()
-		thisNodeIdx := leafInfo.idx
+		thisNodeIdx := breadCrumb.idx
 		// n has no parent which means n is a root+leaf node
 		if !ok {
 			return nil
 		}
 		par := parInfo.node
 		// check if we can borrow from cousin
-		done := t._tryBorrowLeafKey(par, thisNodeIdx, n)
+		done, err := t._tryBorrowLeafKey(par, thisNodeIdx, n)
+		if err != nil {
+			return err
+		}
 		if done {
 			return nil
 		}
 
-		var maybeNewRoot *node
+		var maybeNewRoot *genericNode
 		// must merge with either previous or next cousins
 		if thisNodeIdx > 0 {
-			t.mergeLeafNodeRightToLeft(par, thisNodeIdx, par.children[thisNodeIdx-1], n)
-			maybeNewRoot = par.children[thisNodeIdx-1]
-		} else if thisNodeIdx < par.keySize {
-			t.mergeLeafNodeRightToLeft(par, thisNodeIdx+1, n, par.children[thisNodeIdx+1])
+			leftPageID := par.children[thisNodeIdx-1]
+			leftPage, err := t.getGenericNode(leftPageID)
+			if err != nil {
+				return err
+			}
+			t.mergeLeafNodeRightToLeft(par, thisNodeIdx, leftPage, n)
+			curs.addUnpin(leftPageID)
+			maybeNewRoot = leftPage
+		} else if thisNodeIdx < int(par.size) {
+			rightPageID := par.children[thisNodeIdx-1]
+			rightPage, err := t.getGenericNode(rightPageID)
+			if err != nil {
+				return err
+			}
+			t.mergeLeafNodeRightToLeft(par, thisNodeIdx+1, n, rightPage)
 			maybeNewRoot = n
 		} else {
 			_assert(false, "should not reach here")
@@ -124,33 +155,49 @@ func (t *btreeCursor) delete(key treeKey) error {
 
 		curBranch := par
 		refIdx := parInfo.idx
-		// for parInCursor, ok := curs.popNext(); ok && curBranch.keySize < t.nodesize/2; {
+		// for parInCursor, ok := curs.popNext(); ok && curBranch.size < t._header.nodeSize/2; {
 		for {
 			parInCursor, ok := curs.popNext()
 			if !ok {
 				// no more parent, which means curBranch is root node
-				if curBranch.keySize == 0 {
+				if curBranch.size == 0 {
 					t.root = maybeNewRoot
+					t._header.rootPgid = int64(maybeNewRoot.osPage.GetPageID())
+					curs.addFlush(0)
 					return nil
 				}
 			}
-			if curBranch.keySize >= t.nodesize/2 {
+			if curBranch.size >= t._header.nodeSize/2 {
 				return nil
 			}
-			// ok && curBranch.keySize < t.nodesize/2
+			// ok && curBranch.size < t._header.nodeSize/2
 			// parent of current branch
 			newPar := parInCursor.node
-			done := t._tryBorrowBranchKey(newPar, refIdx, curBranch)
+			done, err := t._tryBorrowBranchKey(&curs, newPar, refIdx, curBranch)
+			if err != nil {
+				return err
+			}
 
 			if done {
 				return nil
 			}
 
 			if refIdx > 0 {
-				t.mergeBranchNodeRightToLeft(newPar, refIdx, newPar.children[refIdx-1], curBranch)
-				maybeNewRoot = newPar.children[refIdx-1]
-			} else if refIdx < newPar.keySize {
-				t.mergeBranchNodeRightToLeft(newPar, refIdx+1, curBranch, newPar.children[refIdx+1])
+				leftPageID := par.children[thisNodeIdx-1]
+				leftPage, err := t.getGenericNode(leftPageID)
+				if err != nil {
+					return err
+				}
+				t.mergeBranchNodeRightToLeft(newPar, refIdx, leftPage, curBranch)
+				maybeNewRoot = leftPage
+			} else if refIdx < int(newPar.size) {
+				rightPageID := par.children[thisNodeIdx-1]
+				rightPage, err := t.getGenericNode(rightPageID)
+				if err != nil {
+					return err
+				}
+
+				t.mergeBranchNodeRightToLeft(newPar, refIdx+1, curBranch, rightPage)
 				maybeNewRoot = curBranch
 			} else {
 				_assert(false, "should not reach here")
@@ -164,159 +211,180 @@ func (t *btreeCursor) delete(key treeKey) error {
 	return nil
 }
 
-func (t *btreeCursor) _tryBorrowLeafKey(newPar *node, refIdx int, curBranch *node) bool {
+func (t *btreeCursor) _tryBorrowLeafKey(newPar *genericNode, refIdx int, curBranch *genericNode) (bool, error) {
 	if refIdx > 0 {
-		left := newPar.children[refIdx-1]
-		if left.leafNode.size > t.nodesize/2 {
+		leftPageID := newPar.children[refIdx-1]
+		left, err := t.getGenericNode(leftPageID)
+		if err != nil {
+			return false, err
+		}
+		if left.size > t._header.nodeSize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
 			t.leafBorrowLeftForRight(newPar, refIdx, left, curBranch)
-			return true
+			t.bpm.UnpinPage(int(leftPageID), true)
+			return true, nil
 		}
 		// try borrow from prev cousin
 	}
-	if refIdx < newPar.keySize {
-		right := newPar.children[refIdx+1]
-		if right.leafNode.size > t.nodesize/2 {
+	if refIdx < int(newPar.size) {
+		rightPageID := newPar.children[refIdx+1]
+		right, err := t.getGenericNode(rightPageID)
+		if err != nil {
+			return false, err
+		}
+		if right.size > t._header.nodeSize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
 			t.leafBorrowRightForLeft(newPar, refIdx, curBranch, right)
-			return true
+			t.bpm.UnpinPage(int(rightPageID), true)
+			return true, nil
 		}
 		// try borrow from next cousin
 	}
-	return false
+	return false, nil
 }
 
-func (t *btreeCursor) _tryBorrowBranchKey(newPar *node, refIdx int, curBranch *node) bool {
+func (t *btreeCursor) _tryBorrowBranchKey(tx *tx, newPar *genericNode, refIdx int, curBranch *genericNode) (bool, error) {
 	if refIdx > 0 {
-		left := newPar.children[refIdx-1]
-		if left.keySize > t.nodesize/2 {
+		leftPageID := newPar.children[refIdx-1]
+		left, err := t.getGenericNode(leftPageID)
+		if err != nil {
+			return false, err
+		}
+		tx.addUnpin(leftPageID)
+		if left.size > t._header.nodeSize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
 			t.borrowLeftForRight(newPar, refIdx, left, curBranch)
-			return true
+			return true, nil
 		}
 		// try borrow from prev cousin
 	}
-	if refIdx < newPar.keySize {
-		right := newPar.children[refIdx+1]
-		if right.keySize > t.nodesize/2 {
+	if refIdx < int(newPar.size) {
+		rightPageID := newPar.children[refIdx+1]
+		right, err := t.getGenericNode(rightPageID)
+		if err != nil {
+			return false, err
+		}
+		tx.addUnpin(rightPageID)
+		if right.size > t._header.nodeSize/2 {
 			// after borrow, parent nodesize stay the same, safe to return
 			t.borrowRightForLeft(newPar, refIdx, curBranch, right)
-			return true
+			return true, nil
 		}
 		// try borrow from next cousin
 	}
 
-	return false
+	return false, nil
 }
 
-func (t *btreeCursor) borrowRightForLeft(par *node, leftIdx int, left, right *node) {
+func (t *btreeCursor) borrowRightForLeft(par *genericNode, leftIdx int, left, right *genericNode) {
 	// prepend current key to current parent
-	splitKey := par.key[leftIdx]
+	splitKey := par.keys[leftIdx]
 
-	// n := copy(right.key[1:right.keySize+1], right.key[:right.keySize])
-	left.key[left.keySize] = splitKey
+	// n := copy(right.keys[1:right.size+1], right.keys[:right.size])
+	left.keys[left.size] = splitKey
 
 	// bring right cousin first pointer to current parent last pointer
-	left.children[left.keySize+1] = right.children[0]
-	left.keySize++
-	rightFirstKey := right.key[0]
+	left.children[left.size+1] = right.children[0]
+	left.size++
+	rightFirstKey := right.keys[0]
 
 	// shrink right cousin to the left
-	copy(right.key[:right.keySize-1], right.key[1:right.keySize])
-	right.key[right.keySize-1] = treeKey{}
-	copy(right.children[:right.keySize], right.children[1:right.keySize+1])
-	right.children[right.keySize] = nil
-	right.keySize--
+	copy(right.keys[:right.size-1], right.keys[1:right.size])
+	right.keys[right.size-1] = keyT{}
+	copy(right.children[:right.size], right.children[1:right.size+1])
+	right.children[right.size] = invalidID
+	right.size--
 
 	// new split key = right cousin (old) first key
-	par.key[leftIdx] = rightFirstKey
+	par.keys[leftIdx] = rightFirstKey
 }
 
-func (t *btreeCursor) leafBorrowRightForLeft(par *node, leftIdx int, leftOuter, rightOuter *node) {
-	left, right := &leftOuter.leafNode, &rightOuter.leafNode
+func (t *btreeCursor) leafBorrowRightForLeft(par *genericNode, leftIdx int, left, right *genericNode) {
 	// prepend current key to current parent
 
-	rightFirstKey := right.data[0]
+	rightFirstKey := right.datas[0]
 
 	// transfer right's first data to left
-	left.data[left.size] = rightFirstKey
+	left.datas[left.size] = rightFirstKey
 
 	// bring right cousin first pointer to current parent last pointer
-	// left.children[left.keySize+1] = right.children[0]
+	// left.children[left.size+1] = right.children[0]
 	left.size++
 
 	// shrink right cousin to the left
-	copy(right.data[:right.size-1], right.data[1:right.size])
-	right.data[right.size-1] = treeVal{}
-	// copy(right.children[:right.keySize], right.children[1:right.keySize+1])
-	// right.children[right.keySize+1] = nil
+	copy(right.datas[:right.size-1], right.datas[1:right.size])
+	right.datas[right.size-1] = valT{}
+	// copy(right.children[:right.size], right.children[1:right.size+1])
+	// right.children[right.size+1] = nil
 	right.size--
-	newRightFirstKey := right.data[0]
+	newRightFirstKey := right.datas[0]
 
 	// new split key = right cousin (old) first key
-	par.key[leftIdx] = newRightFirstKey.key
+	par.keys[leftIdx] = newRightFirstKey.key
 }
 
-func (t *btreeCursor) leafBorrowLeftForRight(par *node, rightIdx int, leftOuter, rightOuter *node) {
-	left, right := &leftOuter.leafNode, &rightOuter.leafNode
+func (t *btreeCursor) leafBorrowLeftForRight(par *genericNode, rightIdx int, left, right *genericNode) {
 	// prepend current key to current parent
-	leftLastKey := left.data[left.size-1]
+	leftLastKey := left.datas[left.size-1]
 
-	n := copy(right.data[1:right.size+1], right.data[:right.size])
-	_assert(n == right.size, "copy key failed")
-	right.data[0] = leftLastKey
+	n := copy(right.datas[1:right.size+1], right.datas[:right.size])
+	_assert(n == int(right.size), "copy key failed")
+	right.datas[0] = leftLastKey
 
 	right.size++
 
-	left.data[left.size-1] = treeVal{}
+	left.datas[left.size-1] = valT{}
 	left.size--
 
 	// replace parent entry with the value of last key
-	par.key[rightIdx-1] = right.data[0].key
+	par.keys[rightIdx-1] = right.datas[0].key
 }
 
 // TODO: make direction generic
-func (t *btreeCursor) borrowLeftForRight(par *node, rightIdx int, left, right *node) {
+func (t *btreeCursor) borrowLeftForRight(par *genericNode, rightIdx int, left, right *genericNode) {
 	// prepend current key to current parent
-	splitKey := par.key[rightIdx-1]
+	splitKey := par.keys[rightIdx-1]
 
-	n := copy(right.key[1:right.keySize+1], right.key[:right.keySize])
-	_assert(n == right.keySize, "copy key failed")
-	right.key[0] = splitKey
+	n := copy(right.keys[1:right.size+1], right.keys[:right.size])
+	_assert(n == int(right.size), "copy key failed")
+	right.keys[0] = splitKey
 
-	n = copy(right.children[1:right.keySize+2], right.children[:right.keySize+1])
-	_assert(n == right.keySize+1, "copy key failed")
-	right.keySize++
+	n = copy(right.children[1:right.size+2], right.children[:right.size+1])
+	_assert(n == int(right.size)+1, "copy key failed")
+	right.size++
 
 	// bring left cousin last pointer to current parent first pointer
-	right.children[0] = left.children[left.keySize]
+	right.children[0] = left.children[left.size]
 	// delete left cousin last pointer (n+1), last key (n)
-	left.children[left.keySize] = nil
-	lastKey := left.key[left.keySize-1]
-	left.key[left.keySize-1] = treeKey{}
-	left.keySize--
+	left.children[left.size] = invalidID
+	lastKey := left.keys[left.size-1]
+	left.keys[left.size-1] = keyT{}
+	left.size--
 
 	// replace parent entry with the value of last key
-	par.key[rightIdx-1] = lastKey
+	par.keys[rightIdx-1] = lastKey
 }
 
-func (t *btreeCursor) mergeLeafNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
+func (t *btreeCursor) mergeLeafNodeRightToLeft(par *genericNode, rightPointerIdx int, left, right *genericNode) {
 	keySplitIdx := rightPointerIdx - 1
 	// left values + right values
-	high, low := left.leafNode.size, left.leafNode.size+right.leafNode.size
-	n := copy(left.leafNode.data[high:low], right.leafNode.data[:right.leafNode.size])
-	_assert(n == right.leafNode.size, "copy failed")
-	left.leafNode.size += right.leafNode.size
+	high, low := left.size, left.size+right.size
+	n := copy(left.datas[high:low], right.datas[:right.size])
+	_assert(n == int(right.size), "copy failed")
+	left.size += right.size
 
-	copy(par.key[keySplitIdx:par.keySize-1], par.key[keySplitIdx+1:par.keySize])
-	copy(par.children[rightPointerIdx:par.keySize], par.children[rightPointerIdx+1:par.keySize+1])
+	copy(par.keys[keySplitIdx:par.size-1], par.keys[keySplitIdx+1:par.size])
+	copy(par.children[rightPointerIdx:par.size], par.children[rightPointerIdx+1:par.size+1])
 	// empty last key because of shrink
-	par.key[par.keySize-1] = treeKey{}
-	par.children[par.keySize] = nil
-	par.keySize--
-	left.leafNode.next = right.leafNode.next
-	if right.leafNode.next != nil {
-		right.leafNode.next.prev = &left.leafNode
+	par.keys[par.size-1] = keyT{}
+	par.children[par.size] = invalidID
+	par.size--
+	left.next = right.next
+
+	deleted := t.bpm.DeletePage(right.osPage.GetPageID())
+	if !deleted {
+		// some other thread is using this deleted page, should detect when
+		panic("delete page failed")
 	}
 }
 
@@ -337,67 +405,80 @@ func (t *btreeCursor) mergeLeafNodeRightToLeft(par *node, rightPointerIdx int, l
 // 			root:2            3
 // 		|  				|	 	 		|
 // 		1 				2				3
-func (t *btreeCursor) mergeBranchNodeRightToLeft(par *node, rightPointerIdx int, left, right *node) {
+func (t *btreeCursor) mergeBranchNodeRightToLeft(par *genericNode, rightPointerIdx int, left, right *genericNode) {
 	// left pointers + right pointers
-	high, low := left.keySize+1, left.keySize+1+right.keySize+1
-	n := copy(left.children[high:low], right.children[:right.keySize+1])
-	_assert(n == right.keySize+1, "copy failed")
+	high, low := left.size+1, left.size+1+right.size+1
+	n := copy(left.children[high:low], right.children[:right.size+1])
+	_assert(n == int(right.size)+1, "copy failed")
 
 	toDeletedKeyIdx := rightPointerIdx - 1
 	toDeletedChildIdx := rightPointerIdx
-	splitKey := par.key[toDeletedKeyIdx]
+	splitKey := par.keys[toDeletedKeyIdx]
 
 	// left keys + split keys + right keys
-	left.key[left.keySize] = splitKey
-	high, low = left.keySize+1, left.keySize+1+right.keySize
-	n = copy(left.key[high:low], right.key[:right.keySize])
-	_assert(n == right.keySize, "copy failed")
-	left.keySize += right.keySize + 1
+	left.keys[left.size] = splitKey
+	high, low = left.size+1, left.size+1+right.size
+	n = copy(left.keys[high:low], right.keys[:right.size])
+	_assert(n == int(right.size), "copy failed")
+	left.size += right.size + 1
 
 	// delete pointer from parent to the right node by shrinking left
-	copy(par.key[toDeletedKeyIdx:par.keySize-1], par.key[toDeletedKeyIdx+1:par.keySize])
+	copy(par.keys[toDeletedKeyIdx:par.size-1], par.keys[toDeletedKeyIdx+1:par.size])
 	// empty last key because of shrink
-	par.key[par.keySize-1] = treeKey{}
-	copy(par.children[toDeletedChildIdx:par.keySize], par.children[toDeletedChildIdx+1:par.keySize+1])
+	par.keys[par.size-1] = keyT{}
+	copy(par.children[toDeletedChildIdx:par.size], par.children[toDeletedChildIdx+1:par.size+1])
 	// empty last children because of shrink
-	par.children[par.keySize] = nil
-	par.keySize--
+	par.children[par.size] = invalidID
+	par.size--
+	deleted := t.bpm.DeletePage(right.osPage.GetPageID())
+	if !deleted {
+		panic("delete branch page failed")
+	}
 }
 
-func (t *btreeCursor) insert(key treeKey, val int) error {
-	cur := cursor{}
+func (t *btreeCursor) insert(key keyT, val int) error {
+	cur := tx{}
 	// cur.stack from root -> nearest parent
-	leafInfo := cur.searchLeafNode(t, key)
-	n := leafInfo.node
-	leaf := &n.leafNode
+	err := cur.searchLeafNode(t, key)
+	if err != nil {
+		return err
+	}
+	breadCrumb, ok := cur.popNext()
+	if !ok {
+		panic("not reached")
+	}
+	n := breadCrumb.node
 
 	// normal insertion
 	{
-		idx, exact := t.findIdxForKey(leaf, key)
+		idx, exact := t.leafNodeFindKeySlot(n, key)
 		if exact {
 			return fmt.Errorf("duplicate key found %v", key)
 		}
-		copy(leaf.data[idx+1:leaf.size+1], leaf.data[idx:leaf.size])
-		leaf.data[idx] = treeVal{
-			val: val,
+		copy(n.datas[idx+1:n.size+1], n.datas[idx:n.size])
+		n.datas[idx] = valT{
+			val: keyT{main: int64(val)},
 			key: key,
 		}
-		leaf.size++
+		n.size++
 	}
 
-	if leaf.size < t.nodesize {
+	if n.size < t._header.nodeSize {
 		return nil
 	}
-	orphan, splitKey := t.splitNode(leaf)
+	orphan, splitKey, err := t.splitLeafNode(&cur, n)
+	if err != nil {
+		return err
+	}
 
 	// retrieve currentParent from cursor latest stack
 	// if currentParent ==nil, create new currentParent(in this case current leaf is also the root node)
-	var currentParent *node
+	var currentParent *genericNode
 
-	for len(cur.stack) > 0 {
-		curStack := cur.stack[len(cur.stack)-1]
+	for len(cur.breadCrumbs) > 0 {
+		curStack := cur.breadCrumbs[len(cur.breadCrumbs)-1]
 		currentParent = curStack.node
-		cur.stack = cur.stack[:len(cur.stack)-1]
+		cur.breadCrumbs = cur.breadCrumbs[:len(cur.breadCrumbs)-1]
 
 		idx, err := currentParent.findUniquePointerIdx(splitKey)
 		if err != nil {
@@ -408,12 +489,15 @@ func (t *btreeCursor) insert(key treeKey, val int) error {
 			key:        splitKey,
 			rightChild: orphan,
 		})
-		if currentParent.keySize < t.nodesize {
+		if currentParent.size < t._header.nodeSize {
 			return nil
 		}
 		// this parent is also full
 
-		newOrphan, newSplitKey := t.splitBranchNode(currentParent)
+		newOrphan, newSplitKey, err := t.splitBranchNode(&cur, currentParent)
+		if err != nil {
+			return err
+		}
 
 		// let the next iteration handle this split with new parent propagated up the stack
 		orphan = newOrphan
@@ -421,156 +505,200 @@ func (t *btreeCursor) insert(key treeKey, val int) error {
 	}
 	// if reach this line, the higest level parent (root) has been recently split
 	firstChild := t.root
-	newRoot := &node{
-		level:    t.root.level + 1,
-		mu:       &sync.RWMutex{},
-		keySize:  0,
-		children: make([]*node, t.nodesize+1),
-		key:      make([]treeKey, t.nodesize),
+	newLevel := t.root.level + 1
+
+	newRoot, err := t.newEmptyBranchNode()
+	if err != nil {
+		return err
 	}
-	newRoot.children[0] = firstChild
-	// newRoot.key[0] = splitKey
+	cur.addUnpin(nodeID(newRoot.osPage.GetPageID()))
+	newRoot.level = newLevel
+	newRoot.children[0] = nodeID(firstChild.osPage.GetPageID())
 	newRoot._insertPointerAtIdx(0, &orphanNode{
 		key:        splitKey,
 		rightChild: orphan,
 	})
 	t.root = newRoot
+	t._header.rootPgid = int64(newRoot.osPage.GetPageID())
+
+	// headerPage Updated, flush instead of unpin (header page is always pinned)
+	cur.addFlush(0)
 	return nil
 }
 
-type cursor struct {
-	stack []cursorInfo
+func (t *btreeCursor) newEmptyLeafNode() (*genericNode, error) {
+	page := t.bpm.NewPage()
+	if page == nil {
+		return nil, fmt.Errorf("buffer full")
+	}
+	newLeaf := castLeafFromEmpty(int(t._header.nodeSize), page.GetData(), page.GetLock())
+	return newLeaf, nil
 }
-type cursorInfo struct {
-	node *node
+
+func (t *btreeCursor) newEmptyBranchNode() (*genericNode, error) {
+	page := t.bpm.NewPage()
+	if page == nil {
+		return nil, fmt.Errorf("buffer full")
+	}
+	newBranch := castBranchFromEmpty(int(t._header.nodeSize), page.GetData(), page.GetLock())
+	return newBranch, nil
+}
+
+type tx struct {
+	breadCrumbs []breadCrumb
+	tobeCleaned []nodeID
+	tobeFlushed []nodeID
+}
+type breadCrumb struct {
+	node *genericNode
 	idx  int // idx at which parent references this node
 }
 
-func (c *cursor) popNext() (cursorInfo, bool) {
-	if len(c.stack) == 0 {
-		return cursorInfo{}, false
+func (c *tx) popNext() (breadCrumb, bool) {
+	if len(c.breadCrumbs) == 0 {
+		return breadCrumb{}, false
 	}
-	ret := c.stack[len(c.stack)-1]
-	c.stack = c.stack[:len(c.stack)-1]
+	ret := c.breadCrumbs[len(c.breadCrumbs)-1]
+	c.breadCrumbs = c.breadCrumbs[:len(c.breadCrumbs)-1]
+	c.addUnpin(nodeID(ret.node.osPage.GetPageID()))
 	return ret, true
 }
 
+func (t *btreeCursor) getGenericNode(pageID nodeID) (*genericNode, error) {
+	page, err := t.bpm.FetchPage(int(pageID))
+	if err != nil {
+		return nil, err
+	}
+	node := castGenericNode(int(t._header.nodeSize), page.GetData(), page.GetLock())
+	return node, nil
+}
+
+func (t *btreeCursor) getRootNode() (*genericNode, error) {
+	rootPage, err := t.bpm.FetchPage(int(t._header.rootPgid))
+	if err != nil {
+		return nil, err
+	}
+	node := castGenericNode(int(t._header.nodeSize), rootPage.GetData(), rootPage.GetLock())
+	return node, nil
+}
+
 // TODO: add some cursor to manage lock
-func (c *cursor) searchLeafNode(t *btreeCursor, searchKey treeKey) cursorInfo {
-	_assert(len(c.stack) == 0, "length of cursor is not cleaned up")
+func (c *tx) searchLeafNode(t *btreeCursor, searchKey keyT) error {
+	_assert(len(c.breadCrumbs) == 0, "length of cursor is not cleaned up")
+	root, err := t.getRootNode()
+	if err != nil {
+		return fmt.Errorf("failed to get root node: %v", err)
+	}
 	var curNode = t.root
-	curLevel := t.root.level
+	curLevel := root.level
 	var pointerIdx int
 	for !curNode.isLeafNode {
 		_assert(curLevel > 0, "reached level 0 node but still have not found leaf node")
-		c.stack = append(c.stack, cursorInfo{
+		c.breadCrumbs = append(c.breadCrumbs, breadCrumb{
 			node: curNode,
 			idx:  pointerIdx,
 		})
-		pointerIdx = curNode.findPointerIdx(searchKey)
-		if curNode.children[pointerIdx] != nil {
-			curNode = curNode.children[pointerIdx]
+		pointerIdx = curNode.branchNodeFindPointerIdx(searchKey)
+		if curNode.children[pointerIdx] != invalidID {
+			nextNodePageID := curNode.children[pointerIdx]
+			curNode, err = t.getGenericNode(nextNodePageID)
+			if err != nil {
+				return err
+			}
 			curLevel--
 			continue
 		}
 		panic(fmt.Sprintf("cannot find correct node for key %v", searchKey))
 	}
-	return cursorInfo{
+	c.breadCrumbs = append(c.breadCrumbs, breadCrumb{
 		node: curNode,
 		idx:  pointerIdx,
-	}
+	})
+	return nil
 }
 
 type orphanNode struct {
-	rightChild *node
-	key        treeKey
+	rightChild *genericNode
+	key        keyT
 }
 
-func (n *node) _insertPointerAtIdx(idx int, orphan *orphanNode) {
-	copy(n.children[idx+2:n.keySize+2], n.children[idx+1:n.keySize+1])
-	copy(n.key[idx+1:n.keySize+1], n.key[idx:n.keySize])
-	n.children[idx+1] = orphan.rightChild
-	n.key[idx] = orphan.key
-	n.keySize++
+//TODO: refactor this function
+func (n *genericNode) _insertPointerAtIdx(idx int, orphan *orphanNode) {
+	copy(n.children[idx+2:n.size+2], n.children[idx+1:n.size+1])
+	copy(n.keys[idx+1:n.size+1], n.keys[idx:n.size])
+	n.children[idx+1] = nodeID(orphan.rightChild.osPage.GetPageID())
+	n.keys[idx] = orphan.key
+	n.size++
 }
 
-func (t *btreeCursor) splitBranchNode(n *node) (*node, treeKey) {
-	newLeftNode := &node{
-		mu:       &sync.RWMutex{},
-		level:    n.level,
-		key:      make([]treeKey, t.nodesize),
-		children: make([]*node, t.nodesize+1),
+func (t *btreeCursor) splitBranchNode(tx *tx, n *genericNode) (*genericNode, keyT, error) {
+	newLeftNode, err := t.newEmptyBranchNode()
+	if err != nil {
+		return nil, keyT{}, err
 	}
-	splitIdx := t.nodesize / 2 // right >= left
-	splitKey := n.key[splitIdx]
-	copy(newLeftNode.key[:n.keySize-splitIdx-1], n.key[splitIdx+1:n.keySize])
-	copy(newLeftNode.children[:n.keySize-splitIdx], n.children[splitIdx+1:n.keySize+1])
-	newLeftNode.keySize = n.keySize - splitIdx - 1
-	for i := splitIdx; i < n.keySize; i++ {
-		n.key[i] = treeKey{}
+	tx.addUnpin(nodeID(newLeftNode.osPage.GetPageID()))
+	newLeftNode.level = n.level
+	splitIdx := t._header.nodeSize / 2 // right >= left
+	splitKey := n.keys[splitIdx]
+	copy(newLeftNode.keys[:n.size-splitIdx-1], n.keys[splitIdx+1:n.size])
+	copy(newLeftNode.children[:n.size-splitIdx], n.children[splitIdx+1:n.size+1])
+	newLeftNode.size = n.size - splitIdx - 1
+	for i := splitIdx; i < n.size; i++ {
+		n.keys[i] = keyT{}
 	}
 
 	// left child will hold more children pointer
 	// p|1|p|2|p|3|p => p|1|p + (splitkey=2) p|3|p
-	for i := splitIdx + 1; i < n.keySize+1; i++ {
-		n.children[i] = nil
+	for i := splitIdx + 1; i < n.size+1; i++ {
+		n.children[i] = invalidID
 	}
 
-	n.keySize = splitIdx
-	return newLeftNode, splitKey
+	n.size = splitIdx
+	return newLeftNode, splitKey, nil
 }
 
 // splitKey returned to create new pointer entry on parent
-func (t *btreeCursor) splitNode(n *leafNode) (*node, treeKey) {
-	newnode := &node{
-		isLeafNode: true,
-		leafNode: leafNode{
-			mu:   &sync.RWMutex{},
-			data: make([]treeVal, t.nodesize),
-		},
+func (t *btreeCursor) splitLeafNode(tx *tx, n *genericNode) (*genericNode, keyT, error) {
+	newLeaf, err := t.newEmptyLeafNode()
+	if err != nil {
+		return nil, keyT{}, err
 	}
-	newLeaf := &newnode.leafNode
+	tx.addUnpin(nodeID(newLeaf.osPage.GetPageID()))
 
-	idx := t.nodesize / 2 // right >= left
-	copy(newLeaf.data[:n.size-idx], n.data[idx:n.size])
+	idx := t._header.nodeSize / 2 // right >= left
+	copy(newLeaf.datas[:n.size-idx], n.datas[idx:n.size])
 	// hacky empty values
 	for i := idx; i < n.size; i++ {
-		n.data[i] = treeVal{}
+		n.datas[i] = valT{}
 	}
 	newLeaf.size = n.size - idx
 	n.size = idx
 
-	// re assign neighbor leaves if any
-	if n.next != nil {
-		n.next.prev = newLeaf
-	}
-
 	newLeaf.next = n.next
-	n.next = newLeaf
-	newLeaf.prev = n
-	splitKey := newLeaf.data[0].key
-	return newnode, splitKey
+	n.next = nodeID(newLeaf.osPage.GetPageID())
+	splitKey := newLeaf.datas[0].key
+	return newLeaf, splitKey, nil
 }
 
-func (t *btreeCursor) insertVal(n *leafNode, val treeVal) error {
-	idx, exact := t.findIdxForKey(n, val.key)
-	if exact {
-		return fmt.Errorf("exact key has already exist")
-	}
-	copy(n.data[idx+1:n.size+1], n.data[idx:n.size])
-	n.data[idx] = val
-	n.size++
-	return nil
-}
+// func (t *btreeCursor) insertVal(n *leafNode, val treeVal) error {
+// 	idx, exact := t.leafNodeFindKeySlot(n, val.key)
+// 	if exact {
+// 		return fmt.Errorf("exact key has already exist")
+// 	}
+// 	copy(n.data[idx+1:n.size+1], n.data[idx:n.size])
+// 	n.data[idx] = val
+// 	n.size++
+// 	return nil
+// }
 
-func (t *btreeCursor) findIdxForKey(n *leafNode, newKey treeKey) (int, bool) {
-	_assert(n.size < t.nodesize, "findingIdx for new value is meaning less when the leaf node is full")
+func (t *btreeCursor) leafNodeFindKeySlot(n *genericNode, newKey keyT) (int, bool) {
+	_assert(n.size < t._header.nodeSize, "findingIdx for new value is meaning less when the leaf node is full")
 	var (
 		exact bool
 	)
-	foundIdx := sort.Search(n.size, func(curIdx int) bool {
-		curKey := n.data[curIdx]
-		comp := compareKey(curKey.key, newKey)
+	foundIdx := sort.Search(int(n.size), func(curIdx int) bool {
+		curTuple := n.datas[curIdx]
+		comp := compareKey(curTuple.key, newKey)
 		if comp == 0 {
 			exact = true
 		}
@@ -579,12 +707,12 @@ func (t *btreeCursor) findIdxForKey(n *leafNode, newKey treeKey) (int, bool) {
 	return foundIdx, exact
 }
 
-func (n *node) findUniquePointerIdx(searchKey treeKey) (int, error) {
+func (n *genericNode) findUniquePointerIdx(searchKey keyT) (int, error) {
 	var (
 		exactmatch bool
 	)
-	foundIdx := sort.Search(n.keySize, func(curIdx int) bool {
-		curKey := n.key[curIdx]
+	foundIdx := sort.Search(int(n.size), func(curIdx int) bool {
+		curKey := n.keys[curIdx]
 		comp := compareKey(curKey, searchKey)
 		if comp == 0 {
 			exactmatch = true
@@ -599,12 +727,12 @@ func (n *node) findUniquePointerIdx(searchKey treeKey) (int, error) {
 }
 
 // only apply to branch node
-func (n *node) findPointerIdx(searchKey treeKey) int {
+func (n *genericNode) branchNodeFindPointerIdx(searchKey keyT) int {
 	var (
 		exactmatch bool
 	)
-	foundIdx := sort.Search(n.keySize, func(curIdx int) bool {
-		curKey := n.key[curIdx]
+	foundIdx := sort.Search(int(n.size), func(curIdx int) bool {
+		curKey := n.keys[curIdx]
 		comp := compareKey(curKey, searchKey)
 		if comp == 0 {
 			exactmatch = true

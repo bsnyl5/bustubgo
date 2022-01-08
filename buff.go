@@ -160,7 +160,6 @@ func (b *BufferPool) FetchPage(pageID int) (*Page, error) {
 		return nil, fmt.Errorf("buffer full")
 	}
 	if inBuffer {
-		fmt.Printf("in buffer")
 		return page, nil
 	}
 	defer page.mu.Unlock()
@@ -187,35 +186,45 @@ func (b *BufferPool) FetchPage(pageID int) (*Page, error) {
 	// 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
 }
 func (b *BufferPool) DeletePage(pageID int) bool {
-	var page *Page
+	// TODO: call deallocate page, future NewPage call can reuse this free page on disk
+	var (
+		page    *Page
+		frameID int
+		deleted bool
+	)
 	locked(b.mu, func() {
 		page = b.pageTable[pageID]
 		if page != nil {
-			delete(b.pageTable, pageID)
+			// page is loaded in buffer, need to reclaim the frame
+			var (
+				pinCount int
+			)
+			locked(page.mu, func() {
+				pinCount = page.pinCount
+				if pinCount > 1 {
+					return
+				}
+				// can safely delete page
+				deleted = true
+				page.reset()
+				frameID = page.frameID
+
+			})
+			if deleted {
+				delete(b.pageTable, pageID)
+			}
 		}
 	})
+	// page is not loaded in buffer, safe to return now
+	// TODO: even if page is not loaded in buffer, need to make its content empty or mark tombstone on disk
 	if page == nil {
 		return true
 	}
-	var (
-		pinCount int
-		frameID  int
-	)
-	locked(page.mu, func() {
-		pinCount = page.pinCount
-		if pinCount == 0 {
-			page.reset()
-			frameID = page.frameID
-			// page.refresh()
-
-		}
-	})
-	if pinCount != 0 {
-		return false
+	if deleted {
+		locked(b.mu, func() {
+			b.freeList.PushFront(frameID)
+		})
 	}
-	locked(b.mu, func() {
-		b.freeList.PushFront(frameID)
-	})
 
 	return true
 	// 0.   Make sure you call DeallocatePage!
@@ -226,29 +235,30 @@ func (b *BufferPool) DeletePage(pageID int) bool {
 }
 
 func (b *BufferPool) UnpinPage(pageID int, isDirty bool) bool {
-	var page *Page
+	var (
+		page *Page
+		ret  bool
+	)
 	locked(b.mu, func() {
 		page = b.pageTable[pageID]
+		if page != nil {
+			var (
+				frameID int
+				prevPin int
+			)
+			locked(page.mu, func() {
+				prevPin = page.pinCount
+				page.pinCount--
+				frameID = page.frameID
+				page.dirty = isDirty
+			})
+			if prevPin == 1 {
+				b.replacer.Unpin(frameID)
+			}
+			ret = prevPin > 0
+		}
 	})
-	if page == nil {
-		// not sure true or false
-		return false
-	}
-
-	var (
-		frameID int
-		prevPin int
-	)
-	locked(page.mu, func() {
-		prevPin = page.pinCount
-		page.pinCount--
-		frameID = page.frameID
-		page.dirty = isDirty
-	})
-	if prevPin == 1 {
-		b.replacer.Unpin(frameID)
-	}
-	return prevPin > 0
+	return ret
 }
 
 func (b *BufferPool) FlushPage(pageID int) {
@@ -287,6 +297,10 @@ type Page struct {
 	mu       *sync.RWMutex
 }
 
+func (p *Page) GetLock() *sync.RWMutex {
+	return p.mu
+}
+
 func (p *Page) flushIfIsDirty() bool {
 	var ret bool
 	p.mu.Lock()
@@ -295,6 +309,7 @@ func (p *Page) flushIfIsDirty() bool {
 	return ret
 }
 
+// TODO: this is meaningless
 func (p *Page) Write(data []byte) error {
 	if len(data) > PageSize {
 		return fmt.Errorf("cannot write more than page size %d", PageSize)
@@ -306,8 +321,6 @@ func (p *Page) Write(data []byte) error {
 }
 
 func (p *Page) GetData() []byte {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	return p.data
 }
 

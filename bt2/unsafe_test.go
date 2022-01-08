@@ -13,13 +13,15 @@ import (
 func Test_castLeafPage(t *testing.T) {
 	testFile := "./testdb"
 	somePage := make([]byte, buff.PageSize)
-	h := castLeafNode(10, somePage, &sync.RWMutex{})
+	h := castLeafFromEmpty(10, somePage, &sync.RWMutex{})
 	h.size = 9
 	h.next = nodeID(7)
 	assert.Len(t, h.datas, 10)
 	seed := 10
 	for i := 0; i < seed; i++ {
-		h.datas[i] = valT{rand.Int63n(100), rand.Int63n(100)}
+		key := keyT{rand.Int63n(100), rand.Int63n(100)}
+		val := keyT{rand.Int63n(100), rand.Int63n(100)}
+		h.datas[i] = valT{key, val}
 	}
 	// h.children
 	assert.NoError(t, os.WriteFile(testFile, somePage, os.ModePerm))
@@ -31,7 +33,7 @@ func Test_castLeafPage(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, buff.PageSize, n)
 
-	h2 := castLeafNode(10, newBuf, &sync.RWMutex{})
+	h2 := castGenericNode(10, newBuf, &sync.RWMutex{})
 	assert.Equal(t, h.size, h2.size)
 	assert.Equal(t, h.next, h2.next)
 	assert.Equal(t, h.datas, h2.datas)
@@ -40,9 +42,8 @@ func Test_castLeafPage(t *testing.T) {
 func Test_castBranchPage(t *testing.T) {
 	testFile := "./testdb"
 	somePage := make([]byte, buff.PageSize)
-	h := castBranchNode(10, somePage, &sync.RWMutex{})
+	h := castBranchFromEmpty(10, somePage, &sync.RWMutex{})
 	h.size = 9
-	h.highKey = keyT{11, 1}
 	assert.Len(t, h.keys, 10)
 	assert.Len(t, h.children, 10)
 	seed := 10
@@ -60,9 +61,8 @@ func Test_castBranchPage(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, buff.PageSize, n)
 
-	h2 := castBranchNode(10, newBuf, &sync.RWMutex{})
+	h2 := castGenericNode(10, newBuf, &sync.RWMutex{})
 	assert.Equal(t, h.size, h2.size)
-	assert.Equal(t, h.highKey, h2.highKey)
 	assert.Equal(t, h.keys, h2.keys)
 	assert.Equal(t, h.children, h2.children)
 }
