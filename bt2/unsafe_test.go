@@ -12,7 +12,7 @@ import (
 func Test_castLeafPage(t *testing.T) {
 	var (
 		size     int64  = 9
-		nodeSize int    = 1
+		nodeSize int    = 10
 		next     nodeID = 7
 	)
 	testFile := "./testdb"

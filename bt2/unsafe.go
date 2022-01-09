@@ -47,7 +47,7 @@ func castBranchFromEmpty(nodeSize int, page Page) *genericNode {
 	unsafeSlice(unsafe.Pointer(&keys), keysData, nodeSize)
 	var children []nodeID
 	childrenData := unsafeAdd(unsafe.Pointer(p), fixed+uintptr(nodeSize)*16)
-	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize)
+	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize+1)
 	return &genericNode{
 		mu:         page.GetLock(),
 		pageHeader: p,
@@ -83,7 +83,7 @@ func castGenericNode(nodeSize int, page Page) *genericNode {
 	unsafeSlice(unsafe.Pointer(&keys), keysData, nodeSize)
 	var children []nodeID
 	childrenData := unsafeAdd(unsafe.Pointer(p), fixed+uintptr(nodeSize)*16)
-	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize)
+	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize+1)
 	return &genericNode{
 		mu:         page.GetLock(),
 		pageHeader: p,

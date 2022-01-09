@@ -479,7 +479,7 @@ func (t *btreeCursor) insert(key keyT, val int64) error {
 		if exact {
 			return fmt.Errorf("duplicate key found %v", key)
 		}
-		// copy(n.datas[idx+1:n.size+1], n.datas[idx:n.size])
+		copy(n.datas[idx+1:n.size+1], n.datas[idx:n.size])
 		n.datas[idx] = valT{
 			val: keyT{main: int64(val)},
 			key: key,
@@ -528,8 +528,12 @@ func (t *btreeCursor) insert(key keyT, val int64) error {
 		splitKey = newSplitKey
 	}
 	// if reach this line, the higest level parent (root) has been recently split
-	firstChild := currentParent
-	newLevel := firstChild.level + 1
+	root, err := t.getRootNode()
+	if err != nil {
+		return err
+	}
+
+	newLevel := root.level + 1
 
 	newRoot, err := t.newEmptyBranchNode()
 	if err != nil {
@@ -537,7 +541,7 @@ func (t *btreeCursor) insert(key keyT, val int64) error {
 	}
 	tx.addUnpin(nodeID(newRoot.osPage.GetPageID()))
 	newRoot.level = newLevel
-	newRoot.children[0] = nodeID(firstChild.osPage.GetPageID())
+	newRoot.children[0] = nodeID(root.osPage.GetPageID())
 	newRoot._insertPointerAtIdx(0, &orphanNode{
 		key:        splitKey,
 		rightChild: orphan,
@@ -647,7 +651,9 @@ type orphanNode struct {
 
 //TODO: refactor this function
 func (n *genericNode) _insertPointerAtIdx(idx int, orphan *orphanNode) {
-	copy(n.children[idx+2:n.size+2], n.children[idx+1:n.size+1])
+	if n.size > int64(idx) {
+		copy(n.children[idx+2:n.size+1], n.children[idx+1:n.size+1])
+	}
 	copy(n.keys[idx+1:n.size+1], n.keys[idx:n.size])
 	n.children[idx+1] = nodeID(orphan.rightChild.osPage.GetPageID())
 	n.keys[idx] = orphan.key
