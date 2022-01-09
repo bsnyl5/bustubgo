@@ -13,11 +13,11 @@ func castHeaderPage(sl []byte) *headerPage {
 // pageData is mmap
 func castLeafFromEmpty(nodeSize int, page Page) *genericNode {
 	pageData := page.GetData()
-	fixed := 32
+	fixed := unsafe.Sizeof(pageHeader{})
 	p := (*pageHeader)(unsafe.Pointer(&pageData[0]))
 
 	var values []valT
-	dataPointer := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed))
+	dataPointer := unsafeAdd(unsafe.Pointer(p), fixed)
 	unsafeSlice(unsafe.Pointer(&values), dataPointer, nodeSize)
 	// for sure
 	p.isLeafNode = true
@@ -34,19 +34,19 @@ func castLeafFromEmpty(nodeSize int, page Page) *genericNode {
 // pageData is mmap
 func castBranchFromEmpty(nodeSize int, page Page) *genericNode {
 	pageData := page.GetData()
-	fixed := 32
+	fixed := unsafe.Sizeof(pageHeader{})
 	p := (*pageHeader)(unsafe.Pointer(&pageData[0]))
 
 	var values []valT
-	dataPointer := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed))
+	dataPointer := unsafeAdd(unsafe.Pointer(p), fixed)
 	unsafeSlice(unsafe.Pointer(&values), dataPointer, nodeSize)
 	// for sure
 	p.isLeafNode = false
 	var keys []keyT
-	keysData := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed))
+	keysData := unsafeAdd(unsafe.Pointer(p), fixed)
 	unsafeSlice(unsafe.Pointer(&keys), keysData, nodeSize)
 	var children []nodeID
-	childrenData := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed)+uintptr(nodeSize)*16)
+	childrenData := unsafeAdd(unsafe.Pointer(p), fixed+uintptr(nodeSize)*16)
 	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize)
 	return &genericNode{
 		mu:         page.GetLock(),
@@ -62,12 +62,12 @@ func castBranchFromEmpty(nodeSize int, page Page) *genericNode {
 // pageData is mmap
 func castGenericNode(nodeSize int, page Page) *genericNode {
 	pageData := page.GetData()
-	fixed := 32
+	fixed := unsafe.Sizeof(pageHeader{})
 	p := (*pageHeader)(unsafe.Pointer(&pageData[0]))
 
 	if p.isLeafNode {
 		var values []valT
-		dataPointer := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed))
+		dataPointer := unsafeAdd(unsafe.Pointer(p), fixed)
 		unsafeSlice(unsafe.Pointer(&values), dataPointer, nodeSize)
 		return &genericNode{
 			mu:         page.GetLock(),
@@ -79,10 +79,10 @@ func castGenericNode(nodeSize int, page Page) *genericNode {
 		}
 	}
 	var keys []keyT
-	keysData := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed))
+	keysData := unsafeAdd(unsafe.Pointer(p), fixed)
 	unsafeSlice(unsafe.Pointer(&keys), keysData, nodeSize)
 	var children []nodeID
-	childrenData := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed)+uintptr(nodeSize)*16)
+	childrenData := unsafeAdd(unsafe.Pointer(p), fixed+uintptr(nodeSize)*16)
 	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize)
 	return &genericNode{
 		mu:         page.GetLock(),
@@ -112,11 +112,10 @@ type bnodeHeader struct {
 type pageHeader struct {
 	isDeleted  bool
 	isLeafNode bool
-	_padding1  [6]byte
+	_padding2  [6]byte
 	level      int64
 	size       int64
-
-	next nodeID
+	next       nodeID
 }
 type genericNode struct {
 	mu     *sync.RWMutex

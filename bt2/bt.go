@@ -90,6 +90,7 @@ func NewBtree(filepath string, nsize int64) *btreeCursor {
 		h.rootPgid = nodeID(rootpage.GetPageID())
 		bpm.FlushPage(0)
 		bpm.FlushPage(int(h.rootPgid))
+		bpm.UnpinPage(int(h.rootPgid), false)
 	}
 	return &btreeCursor{
 		bpm:            bpm,
@@ -478,7 +479,7 @@ func (t *btreeCursor) insert(key keyT, val int64) error {
 		if exact {
 			return fmt.Errorf("duplicate key found %v", key)
 		}
-		copy(n.datas[idx+1:n.size+1], n.datas[idx:n.size])
+		// copy(n.datas[idx+1:n.size+1], n.datas[idx:n.size])
 		n.datas[idx] = valT{
 			val: keyT{main: int64(val)},
 			key: key,
