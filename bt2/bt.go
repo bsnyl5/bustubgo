@@ -2,7 +2,9 @@ package bt2
 
 import (
 	"buff"
+	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"sync"
 )
@@ -54,24 +56,45 @@ type node struct {
 }
 
 type btreeCursor struct {
-	root    *genericNode
-	bpm     *buff.BufferPool
-	_header *headerPage
-	// leftmostLeafNode  *leafNode
-	// rightmostLeafNode *leafNode
+	bpm            *buff.BufferPool
+	_header        *headerPage
+	headerPageLock *sync.RWMutex
 }
 
-func NewBtree(filepath string, nsize int) *btreeCursor {
+func NewBtree(filepath string, nsize int64) *btreeCursor {
 	disk := buff.NewDiskManager(filepath)
 	bpm := buff.NewBufferPool(30, disk)
 	header, err := bpm.FetchPage(0)
 	if err != nil {
-		panic(err)
+		if errors.Is(err, io.EOF) {
+			header = bpm.NewPage()
+			if header == nil {
+				panic("either fetch page(0) or new page failed")
+			}
+			if header.GetPageID() != 0 {
+				panic("page id of first new page call is not 0")
+			}
+		} else {
+			panic(err)
+		}
 	}
-	headerPage := castHeaderPage(header.GetData())
+	h := castHeaderPage(header.GetData())
+	if h.flags&headerFlagInit == 0 {
+		h.flags ^= headerFlagInit
+		h.nodeSize = nsize
+		rootpage := bpm.NewPage()
+		if rootpage == nil {
+			panic("cannot create root page")
+		}
+		castLeafFromEmpty(int(h.nodeSize), rootpage)
+		h.rootPgid = nodeID(rootpage.GetPageID())
+		bpm.FlushPage(0)
+		bpm.FlushPage(int(h.rootPgid))
+	}
 	return &btreeCursor{
-		bpm:     bpm,
-		_header: headerPage,
+		bpm:            bpm,
+		_header:        h,
+		headerPageLock: header.GetLock(),
 	}
 }
 
@@ -161,8 +184,7 @@ func (t *btreeCursor) delete(key keyT) error {
 			if !ok {
 				// no more parent, which means curBranch is root node
 				if curBranch.size == 0 {
-					t.root = maybeNewRoot
-					t._header.rootPgid = int64(maybeNewRoot.osPage.GetPageID())
+					t._header.rootPgid = nodeID(maybeNewRoot.osPage.GetPageID())
 					curs.addFlush(0)
 					return nil
 				}
@@ -436,14 +458,15 @@ func (t *btreeCursor) mergeBranchNodeRightToLeft(par *genericNode, rightPointerI
 	}
 }
 
-func (t *btreeCursor) insert(key keyT, val int) error {
-	cur := tx{}
+func (t *btreeCursor) insert(key keyT, val int64) error {
+	tx := tx{}
 	// cur.stack from root -> nearest parent
-	err := cur.searchLeafNode(t, key)
+	err := tx.searchLeafNode(t, key)
 	if err != nil {
 		return err
 	}
-	breadCrumb, ok := cur.popNext()
+	defer tx.unpinPages(t.bpm)
+	breadCrumb, ok := tx.popNext()
 	if !ok {
 		panic("not reached")
 	}
@@ -466,7 +489,7 @@ func (t *btreeCursor) insert(key keyT, val int) error {
 	if n.size < t._header.nodeSize {
 		return nil
 	}
-	orphan, splitKey, err := t.splitLeafNode(&cur, n)
+	orphan, splitKey, err := t.splitLeafNode(&tx, n)
 	if err != nil {
 		return err
 	}
@@ -475,10 +498,10 @@ func (t *btreeCursor) insert(key keyT, val int) error {
 	// if currentParent ==nil, create new currentParent(in this case current leaf is also the root node)
 	var currentParent *genericNode
 
-	for len(cur.breadCrumbs) > 0 {
-		curStack := cur.breadCrumbs[len(cur.breadCrumbs)-1]
+	for len(tx.breadCrumbs) > 0 {
+		curStack := tx.breadCrumbs[len(tx.breadCrumbs)-1]
 		currentParent = curStack.node
-		cur.breadCrumbs = cur.breadCrumbs[:len(cur.breadCrumbs)-1]
+		tx.breadCrumbs = tx.breadCrumbs[:len(tx.breadCrumbs)-1]
 
 		idx, err := currentParent.findUniquePointerIdx(splitKey)
 		if err != nil {
@@ -494,7 +517,7 @@ func (t *btreeCursor) insert(key keyT, val int) error {
 		}
 		// this parent is also full
 
-		newOrphan, newSplitKey, err := t.splitBranchNode(&cur, currentParent)
+		newOrphan, newSplitKey, err := t.splitBranchNode(&tx, currentParent)
 		if err != nil {
 			return err
 		}
@@ -504,25 +527,24 @@ func (t *btreeCursor) insert(key keyT, val int) error {
 		splitKey = newSplitKey
 	}
 	// if reach this line, the higest level parent (root) has been recently split
-	firstChild := t.root
-	newLevel := t.root.level + 1
+	firstChild := currentParent
+	newLevel := firstChild.level + 1
 
 	newRoot, err := t.newEmptyBranchNode()
 	if err != nil {
 		return err
 	}
-	cur.addUnpin(nodeID(newRoot.osPage.GetPageID()))
+	tx.addUnpin(nodeID(newRoot.osPage.GetPageID()))
 	newRoot.level = newLevel
 	newRoot.children[0] = nodeID(firstChild.osPage.GetPageID())
 	newRoot._insertPointerAtIdx(0, &orphanNode{
 		key:        splitKey,
 		rightChild: orphan,
 	})
-	t.root = newRoot
-	t._header.rootPgid = int64(newRoot.osPage.GetPageID())
+	t._header.rootPgid = nodeID(newRoot.osPage.GetPageID())
 
 	// headerPage Updated, flush instead of unpin (header page is always pinned)
-	cur.addFlush(0)
+	tx.addFlush(0)
 	return nil
 }
 
@@ -531,7 +553,7 @@ func (t *btreeCursor) newEmptyLeafNode() (*genericNode, error) {
 	if page == nil {
 		return nil, fmt.Errorf("buffer full")
 	}
-	newLeaf := castLeafFromEmpty(int(t._header.nodeSize), page.GetData(), page.GetLock())
+	newLeaf := castLeafFromEmpty(int(t._header.nodeSize), page)
 	return newLeaf, nil
 }
 
@@ -540,7 +562,7 @@ func (t *btreeCursor) newEmptyBranchNode() (*genericNode, error) {
 	if page == nil {
 		return nil, fmt.Errorf("buffer full")
 	}
-	newBranch := castBranchFromEmpty(int(t._header.nodeSize), page.GetData(), page.GetLock())
+	newBranch := castBranchFromEmpty(int(t._header.nodeSize), page)
 	return newBranch, nil
 }
 
@@ -569,7 +591,7 @@ func (t *btreeCursor) getGenericNode(pageID nodeID) (*genericNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	node := castGenericNode(int(t._header.nodeSize), page.GetData(), page.GetLock())
+	node := castGenericNode(int(t._header.nodeSize), page)
 	return node, nil
 }
 
@@ -578,7 +600,7 @@ func (t *btreeCursor) getRootNode() (*genericNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	node := castGenericNode(int(t._header.nodeSize), rootPage.GetData(), rootPage.GetLock())
+	node := castGenericNode(int(t._header.nodeSize), rootPage)
 	return node, nil
 }
 
@@ -589,7 +611,7 @@ func (c *tx) searchLeafNode(t *btreeCursor, searchKey keyT) error {
 	if err != nil {
 		return fmt.Errorf("failed to get root node: %v", err)
 	}
-	var curNode = t.root
+	var curNode = root
 	curLevel := root.level
 	var pointerIdx int
 	for !curNode.isLeafNode {

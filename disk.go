@@ -18,7 +18,7 @@ const (
 func NewDiskManager(filename string) *DiskManager {
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("failed to open file %s", filename))
 	}
 	return &DiskManager{
 		m: &sync.Mutex{},

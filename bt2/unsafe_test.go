@@ -4,7 +4,6 @@ import (
 	"buff"
 	"math/rand"
 	"os"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,7 +12,7 @@ import (
 func Test_castLeafPage(t *testing.T) {
 	testFile := "./testdb"
 	somePage := make([]byte, buff.PageSize)
-	h := castLeafFromEmpty(10, somePage, &sync.RWMutex{})
+	h := castLeafFromEmpty(10, newMockPage(somePage))
 	h.size = 9
 	h.next = nodeID(7)
 	assert.Len(t, h.datas, 10)
@@ -33,7 +32,7 @@ func Test_castLeafPage(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, buff.PageSize, n)
 
-	h2 := castGenericNode(10, newBuf, &sync.RWMutex{})
+	h2 := castGenericNode(10, newMockPage(newBuf))
 	assert.Equal(t, h.size, h2.size)
 	assert.Equal(t, h.next, h2.next)
 	assert.Equal(t, h.datas, h2.datas)
@@ -42,7 +41,7 @@ func Test_castLeafPage(t *testing.T) {
 func Test_castBranchPage(t *testing.T) {
 	testFile := "./testdb"
 	somePage := make([]byte, buff.PageSize)
-	h := castBranchFromEmpty(10, somePage, &sync.RWMutex{})
+	h := castBranchFromEmpty(10, newMockPage(somePage))
 	h.size = 9
 	assert.Len(t, h.keys, 10)
 	assert.Len(t, h.children, 10)
@@ -61,7 +60,7 @@ func Test_castBranchPage(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, buff.PageSize, n)
 
-	h2 := castGenericNode(10, newBuf, &sync.RWMutex{})
+	h2 := castGenericNode(10, newMockPage(newBuf))
 	assert.Equal(t, h.size, h2.size)
 	assert.Equal(t, h.keys, h2.keys)
 	assert.Equal(t, h.children, h2.children)

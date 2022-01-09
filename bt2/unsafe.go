@@ -1,17 +1,18 @@
 package bt2
 
 import (
-	"buff"
 	"sync"
 	"unsafe"
 )
 
 func castHeaderPage(sl []byte) *headerPage {
-	return (*headerPage)(unsafe.Pointer(&sl[0]))
+	h := (*headerPage)(unsafe.Pointer(&sl[0]))
+	return h
 }
 
 // pageData is mmap
-func castLeafFromEmpty(nodeSize int, pageData []byte, mu *sync.RWMutex) *genericNode {
+func castLeafFromEmpty(nodeSize int, page Page) *genericNode {
+	pageData := page.GetData()
 	fixed := 32
 	p := (*pageHeader)(unsafe.Pointer(&pageData[0]))
 
@@ -21,16 +22,18 @@ func castLeafFromEmpty(nodeSize int, pageData []byte, mu *sync.RWMutex) *generic
 	// for sure
 	p.isLeafNode = true
 	return &genericNode{
-		mu:         mu,
+		mu:         page.GetLock(),
 		pageHeader: p,
 		leafData: &leafData{
 			datas: values,
 		},
+		osPage: page,
 	}
 }
 
 // pageData is mmap
-func castBranchFromEmpty(nodeSize int, pageData []byte, mu *sync.RWMutex) *genericNode {
+func castBranchFromEmpty(nodeSize int, page Page) *genericNode {
+	pageData := page.GetData()
 	fixed := 32
 	p := (*pageHeader)(unsafe.Pointer(&pageData[0]))
 
@@ -46,17 +49,19 @@ func castBranchFromEmpty(nodeSize int, pageData []byte, mu *sync.RWMutex) *gener
 	childrenData := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed)+uintptr(nodeSize)*16)
 	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize)
 	return &genericNode{
-		mu:         mu,
+		mu:         page.GetLock(),
 		pageHeader: p,
 		branchData: &branchData{
 			keys:     keys,
 			children: children,
 		},
+		osPage: page,
 	}
 }
 
 // pageData is mmap
-func castGenericNode(nodeSize int, pageData []byte, mu *sync.RWMutex) *genericNode {
+func castGenericNode(nodeSize int, page Page) *genericNode {
+	pageData := page.GetData()
 	fixed := 32
 	p := (*pageHeader)(unsafe.Pointer(&pageData[0]))
 
@@ -65,8 +70,9 @@ func castGenericNode(nodeSize int, pageData []byte, mu *sync.RWMutex) *genericNo
 		dataPointer := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed))
 		unsafeSlice(unsafe.Pointer(&values), dataPointer, nodeSize)
 		return &genericNode{
-			mu:         mu,
+			mu:         page.GetLock(),
 			pageHeader: p,
+			osPage:     page,
 			leafData: &leafData{
 				datas: values,
 			},
@@ -79,8 +85,9 @@ func castGenericNode(nodeSize int, pageData []byte, mu *sync.RWMutex) *genericNo
 	childrenData := unsafeAdd(unsafe.Pointer(&pageData[0]), unsafe.Sizeof(fixed)+uintptr(nodeSize)*16)
 	unsafeSlice(unsafe.Pointer(&children), childrenData, nodeSize)
 	return &genericNode{
-		mu:         mu,
+		mu:         page.GetLock(),
 		pageHeader: p,
+		osPage:     page,
 		branchData: &branchData{
 			keys:     keys,
 			children: children,
@@ -93,9 +100,8 @@ const maxAllocSize = 0x7FFFFFFF
 
 type headerPage struct {
 	flags     int64
-	rootPgid  int64
+	rootPgid  nodeID
 	nodeSize  int64
-	init      bool
 	_padding1 [7]byte
 }
 
@@ -114,7 +120,7 @@ type pageHeader struct {
 }
 type genericNode struct {
 	mu     *sync.RWMutex
-	osPage *buff.Page // reference back to the OS/buffer pool page
+	osPage Page // reference back to the OS/buffer pool page
 	*pageHeader
 	*branchData
 	*leafData

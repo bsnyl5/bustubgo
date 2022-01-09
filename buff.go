@@ -48,6 +48,9 @@ func (b *BufferPool) lockedAllocatePage() int {
 func (b *Page) GetPageID() int {
 	return b.pageID
 }
+func (b *BufferPool) Close() error {
+	return b.diskManager.f.Close()
+}
 
 func (b *BufferPool) NewPage() *Page {
 	var (
@@ -173,7 +176,7 @@ func (b *BufferPool) FetchPage(pageID int) (*Page, error) {
 	page.assignNew(pageID, freeFrame)
 	err := b.diskManager.ReadPage(int64(pageID), page.data)
 	if err != nil {
-		panic(fmt.Sprintf("todo: %s", err))
+		return nil, err
 	}
 	page.pin()
 	return page, nil
