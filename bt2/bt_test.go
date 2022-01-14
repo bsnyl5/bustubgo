@@ -90,150 +90,159 @@ func newBtree(t *testing.T, filename string, nsize int64) *btreeCursor {
 	return tr
 }
 
-// func Test_btreeDelete(t *testing.T) {
+func Test_btreeDelete(t *testing.T) {
 
-// 	// cur.stack from root -> nearest parent
-// 	type deleteTestCase struct {
-// 		insertions  []int
-// 		deletions   []int
-// 		rootKeys    []keyT
-// 		leafKeyVals [][]valT
-// 		nodesize    int
-// 	}
-// 	tcases := []deleteTestCase{
-// 		{
-// 			nodesize:   3,
-// 			insertions: sequentialUntil(5),
-// 			deletions:  []int{2},
-// 			rootKeys:   makeTreeKey([]int{3, 4}),
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{1}),
-// 				makeTreeVal([]int{3}),
-// 				makeTreeVal([]int{4, 5}),
-// 			},
-// 		},
-// 		{
-// 			nodesize:   3,
-// 			insertions: []int{1, 2, 3},
-// 			deletions:  []int{2, 1},
-// 			rootKeys:   makeTreeKey([]int{3}),
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{3}),
-// 			},
-// 		},
-// 		{
-// 			nodesize:   3,
-// 			insertions: []int{1, 2, 3},
-// 			deletions:  []int{1},
-// 			rootKeys:   makeTreeKey([]int{3}),
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{2}),
-// 				makeTreeVal([]int{3}),
-// 			},
-// 		},
-// 		{
-// 			nodesize:   3,
-// 			insertions: invertedSequentialUntil(10),
-// 			deletions:  []int{10, 9, 8},
-// 			rootKeys:   makeTreeKey([]int{5}),
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{1, 2}),
-// 				makeTreeVal([]int{3, 4}),
-// 				makeTreeVal([]int{5, 6}),
-// 				makeTreeVal([]int{7}),
-// 			},
-// 		},
-// 		{
-// 			nodesize:   3,
-// 			insertions: sequentialUntil(8),
-// 			deletions:  []int{4},
-// 			rootKeys:   makeTreeKey([]int{3, 6}),
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{1}),
-// 				makeTreeVal([]int{2}),
-// 				makeTreeVal([]int{3}),
-// 				makeTreeVal([]int{5}),
-// 				makeTreeVal([]int{6}),
-// 				makeTreeVal([]int{7, 8}),
-// 			},
-// 		},
-// 		{
-// 			nodesize:   3,
-// 			insertions: []int{1, 2, 3, 4, 5, 6},
-// 			deletions:  []int{2},
-// 			rootKeys:   makeTreeKey([]int{4}),
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{1}),
-// 				makeTreeVal([]int{3}),
-// 				makeTreeVal([]int{4}),
-// 				makeTreeVal([]int{5, 6}),
-// 			},
-// 		},
-// 		{
-// 			nodesize:   3,
-// 			rootKeys:   makeTreeKey([]int{2}),
-// 			insertions: []int{1, 2, 3, 4, 5},
-// 			deletions:  []int{5, 4, 3},
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{1}),
-// 				makeTreeVal([]int{2}),
-// 			},
-// 		},
-// 		{
-// 			nodesize:   3,
-// 			insertions: []int{1, 2, 3, 4, 5},
-// 			deletions:  []int{5, 4, 3, 2},
-// 			rootKeys:   makeTreeKey([]int{1}),
-// 			leafKeyVals: [][]valT{
-// 				makeTreeVal([]int{1}),
-// 			},
-// 		},
-// 	}
-// 	for _, tc := range tcases {
-// 		tr := NewBtree(tc.nodesize)
-// 		for _, insertItem := range tc.insertions {
-// 			assert.NoError(t, tr.insert(keyT{main: insertItem}, insertItem))
-// 		}
-// 		for _, deleteItem := range tc.deletions {
-// 			assert.NoError(t, tr.delete(keyT{main: deleteItem}))
-// 		}
+	// cur.stack from root -> nearest parent
+	type deleteTestCase struct {
+		insertions  []int64
+		deletions   []int64
+		rootKeys    []keyT
+		leafKeyVals [][]valT
+		nodesize    int64
+	}
+	tcases := []deleteTestCase{
+		// {
+		// 	nodesize:   3,
+		// 	insertions: sequentialUntil(5),
+		// 	deletions:  []int64{2},
+		// 	rootKeys:   makeTreeKey([]int64{3, 4}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1}),
+		// 		makeTreeVal([]int64{3}),
+		// 		makeTreeVal([]int64{4, 5}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   3,
+		// 	insertions: []int64{1, 2, 3},
+		// 	deletions:  []int64{2, 1},
+		// 	rootKeys:   makeTreeKey([]int64{3}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{3}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   3,
+		// 	insertions: []int64{1, 2, 3},
+		// 	deletions:  []int64{1},
+		// 	rootKeys:   makeTreeKey([]int64{3}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{2}),
+		// 		makeTreeVal([]int64{3}),
+		// 	},
+		// },
+		{
+			nodesize:   3,
+			insertions: invertedSequentialUntil(10),
+			deletions:  []int64{10, 9, 8},
+			rootKeys:   makeTreeKey([]int64{5}),
+			leafKeyVals: [][]valT{
+				makeTreeVal([]int64{1, 2}),
+				makeTreeVal([]int64{3, 4}),
+				makeTreeVal([]int64{5, 6}),
+				makeTreeVal([]int64{7}),
+			},
+		},
+		// {
+		// 	nodesize:   3,
+		// 	insertions: sequentialUntil(8),
+		// 	deletions:  []int64{4},
+		// 	rootKeys:   makeTreeKey([]int64{3, 6}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1}),
+		// 		makeTreeVal([]int64{2}),
+		// 		makeTreeVal([]int64{3}),
+		// 		makeTreeVal([]int64{5}),
+		// 		makeTreeVal([]int64{6}),
+		// 		makeTreeVal([]int64{7, 8}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   3,
+		// 	insertions: []int64{1, 2, 3, 4, 5, 6},
+		// 	deletions:  []int64{2},
+		// 	rootKeys:   makeTreeKey([]int64{4}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1}),
+		// 		makeTreeVal([]int64{3}),
+		// 		makeTreeVal([]int64{4}),
+		// 		makeTreeVal([]int64{5, 6}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   3,
+		// 	rootKeys:   makeTreeKey([]int64{2}),
+		// 	insertions: []int64{1, 2, 3, 4, 5},
+		// 	deletions:  []int64{5, 4, 3},
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1}),
+		// 		makeTreeVal([]int64{2}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   3,
+		// 	insertions: []int64{1, 2, 3, 4, 5},
+		// 	deletions:  []int64{5, 4, 3, 2},
+		// 	rootKeys:   makeTreeKey([]int64{1}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1}),
+		// 	},
+		// },
+	}
+	for idx, tc := range tcases {
+		t.Run(fmt.Sprintf("delete %d", idx), func(t *testing.T) {
+			file := fmt.Sprintf("test-%s.db", t.Name())
+			file = strings.ReplaceAll(file, string(filepath.Separator), "_")
+			tr := newBtree(t, file, tc.nodesize)
+			defer func() {
+				tr.bpm.Close()
+				os.Remove(file)
+			}()
+			for _, insertItem := range tc.insertions {
+				assert.NoError(t, tr.insert(keyT{main: insertItem}, insertItem))
+			}
+			for _, deleteItem := range tc.deletions {
+				assert.NoError(t, tr.delete(keyT{main: deleteItem}))
+			}
 
-// 		root := tr.root
-// 		if root.isLeafNode {
-// 			assert.Equal(t, tc.rootKeys, keysFromVals(root.leafNode.data[:root.leafNode.size]))
-// 		} else {
-// 			assert.Equal(t, tc.rootKeys, root.key[:root.keySize])
-// 		}
-// 		cur := tx{}
-// 		n := cur.searchLeafNode(tr, keyT{main: -1})
-// 		assert.NotNil(t, n)
-// 		var (
-// 			prev    *leafNode
-// 			current = &n.node.leafNode
-// 		)
-// 		for idx := range tc.leafKeyVals {
-// 			expectVals := tc.leafKeyVals[idx]
-// 			if prev != nil {
-// 				assert.Equal(t, prev, current.prev)
-// 			}
-// 			assert.Equal(t, expectVals, current.data[:current.size])
-// 			assertNullVals(t, current.data[current.size:])
-// 			prev = current
-// 			current = current.next
-// 		}
-// 	}
-// }
+			root, err := tr.getRootNode()
+			assert.NoError(t, err)
+			if root.isLeafNode {
+				assert.Equal(t, tc.rootKeys, keysFromVals(root.datas[:root.size]))
+			} else {
+				assert.Equal(t, tc.rootKeys, root.keys[:root.size])
+			}
+			cur := tx{}
+			err = cur.searchLeafNode(tr, keyT{main: -1})
+			assert.NoError(t, err)
+			leftmost, bool := cur.popNext()
+			assert.True(t, bool)
 
-func Test_btreeSimpleInsert(t *testing.T) {
-	file := fmt.Sprintf("test-%s.db", t.Name())
-	file = strings.ReplaceAll(file, string(filepath.Separator), "_")
-	tr := newBtree(t, file, 10)
-	defer func() {
-		tr.bpm.Close()
-		os.Remove(file)
-	}()
-	assert.NoError(t, tr.insert(keyT{main: 1}, 1))
+			var (
+				current = leftmost.node
+			)
+			for idx := range tc.leafKeyVals {
+				expectVals := tc.leafKeyVals[idx]
+				assert.Equal(t, expectVals, current.datas[:current.size])
+				assertNullVals(t, current.datas[current.size:])
+				current, err = tr.getGenericNode(current.next)
+				assert.NoError(t, err)
+			}
+		})
+
+	}
 }
+
+// func Test_btreeSimpleInsert(t *testing.T) {
+// 	file := fmt.Sprintf("test-%s.db", t.Name())
+// 	file = strings.ReplaceAll(file, string(filepath.Separator), "_")
+// 	tr := newBtree(t, file, 10)
+// 	defer func() {
+// 		tr.bpm.Close()
+// 		os.Remove(file)
+// 	}()
+// 	assert.NoError(t, tr.insert(keyT{main: 1}, 1))
+// }
 
 func Test_btreeInsert(t *testing.T) {
 
@@ -245,59 +254,59 @@ func Test_btreeInsert(t *testing.T) {
 		nodesize    int64
 	}
 	tcases := []insertTestCase{
-		// {
-		// 	nodesize:   3,
-		// 	insertions: invertedSequentialUntil(3),
-		// 	rootKeys:   makeTreeKey([]int64{2}),
-		// 	leafKeyVals: [][]valT{
-		// 		makeTreeVal([]int64{1}),
-		// 		makeTreeVal([]int64{2, 3}),
-		// 	},
-		// },
 		{
 			nodesize:   3,
-			insertions: invertedSequentialUntil(10),
-			rootKeys:   makeTreeKey([]int64{7}),
-			leafKeyVals: [][]valT{
-				makeTreeVal([]int64{1, 2}),
-				makeTreeVal([]int64{3, 4}),
-				makeTreeVal([]int64{5, 6}),
-				makeTreeVal([]int64{7, 8}),
-				makeTreeVal([]int64{9, 10}),
-			},
-		},
-		{
-			nodesize:   3,
-			insertions: []int64{1, 2, 3, 4, 5, 6},
-			rootKeys:   makeTreeKey([]int64{3}),
+			insertions: sequentialUntil(5),
+			rootKeys:   makeTreeKey([]int64{2}),
 			leafKeyVals: [][]valT{
 				makeTreeVal([]int64{1}),
-				makeTreeVal([]int64{2}),
-				makeTreeVal([]int64{3}),
-				makeTreeVal([]int64{4}),
-				makeTreeVal([]int64{5, 6}),
+				makeTreeVal([]int64{2, 3}),
 			},
 		},
-		{
-			nodesize:   4,
-			insertions: []int64{1, 3, 5, 9, 10},
-			rootKeys:   makeTreeKey([]int64{5}),
-			leafKeyVals: [][]valT{
-				makeTreeVal([]int64{1, 3}),
-				makeTreeVal([]int64{5, 9, 10}),
-			},
-		},
-		{
-			nodesize:   7,
-			insertions: sequentialUntil(13),
-			rootKeys:   makeTreeKey([]int64{4, 7, 10}),
-			leafKeyVals: [][]valT{
-				makeTreeVal([]int64{1, 2, 3}),
-				makeTreeVal([]int64{4, 5, 6}),
-				makeTreeVal([]int64{7, 8, 9}),
-				makeTreeVal([]int64{10, 11, 12, 13}),
-			},
-		},
+		// {
+		// 	nodesize:   3,
+		// 	insertions: invertedSequentialUntil(10),
+		// 	rootKeys:   makeTreeKey([]int64{7}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1, 2}),
+		// 		makeTreeVal([]int64{3, 4}),
+		// 		makeTreeVal([]int64{5, 6}),
+		// 		makeTreeVal([]int64{7, 8}),
+		// 		makeTreeVal([]int64{9, 10}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   3,
+		// 	insertions: []int64{1, 2, 3, 4, 5, 6},
+		// 	rootKeys:   makeTreeKey([]int64{3}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1}),
+		// 		makeTreeVal([]int64{2}),
+		// 		makeTreeVal([]int64{3}),
+		// 		makeTreeVal([]int64{4}),
+		// 		makeTreeVal([]int64{5, 6}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   4,
+		// 	insertions: []int64{1, 3, 5, 9, 10},
+		// 	rootKeys:   makeTreeKey([]int64{5}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1, 3}),
+		// 		makeTreeVal([]int64{5, 9, 10}),
+		// 	},
+		// },
+		// {
+		// 	nodesize:   7,
+		// 	insertions: sequentialUntil(13),
+		// 	rootKeys:   makeTreeKey([]int64{4, 7, 10}),
+		// 	leafKeyVals: [][]valT{
+		// 		makeTreeVal([]int64{1, 2, 3}),
+		// 		makeTreeVal([]int64{4, 5, 6}),
+		// 		makeTreeVal([]int64{7, 8, 9}),
+		// 		makeTreeVal([]int64{10, 11, 12, 13}),
+		// 	},
+		// },
 	}
 	for idx, tc := range tcases {
 		t.Run(fmt.Sprintf("insert %d", idx), func(t *testing.T) {

@@ -166,7 +166,7 @@ func (t *btreeCursor) delete(key keyT) error {
 			curs.addUnpin(leftPageID)
 			maybeNewRoot = leftPage
 		} else if thisNodeIdx < int(par.size) {
-			rightPageID := par.children[thisNodeIdx-1]
+			rightPageID := par.children[thisNodeIdx+1]
 			rightPage, err := t.getGenericNode(rightPageID)
 			if err != nil {
 				return err
@@ -206,7 +206,7 @@ func (t *btreeCursor) delete(key keyT) error {
 			}
 
 			if refIdx > 0 {
-				leftPageID := par.children[thisNodeIdx-1]
+				leftPageID := newPar.children[refIdx-1]
 				leftPage, err := t.getGenericNode(leftPageID)
 				if err != nil {
 					return err
@@ -214,7 +214,7 @@ func (t *btreeCursor) delete(key keyT) error {
 				t.mergeBranchNodeRightToLeft(newPar, refIdx, leftPage, curBranch)
 				maybeNewRoot = leftPage
 			} else if refIdx < int(newPar.size) {
-				rightPageID := par.children[thisNodeIdx-1]
+				rightPageID := newPar.children[refIdx+1]
 				rightPage, err := t.getGenericNode(rightPageID)
 				if err != nil {
 					return err
@@ -430,8 +430,8 @@ func (t *btreeCursor) mergeLeafNodeRightToLeft(par *genericNode, rightPointerIdx
 // 		1 				2				3
 func (t *btreeCursor) mergeBranchNodeRightToLeft(par *genericNode, rightPointerIdx int, left, right *genericNode) {
 	// left pointers + right pointers
-	high, low := left.size+1, left.size+1+right.size+1
-	n := copy(left.children[high:low], right.children[:right.size+1])
+	low, high := left.size+1, left.size+1+right.size+1
+	n := copy(left.children[low:high], right.children[:right.size+1])
 	_assert(n == int(right.size)+1, "copy failed")
 
 	toDeletedKeyIdx := rightPointerIdx - 1
@@ -440,8 +440,8 @@ func (t *btreeCursor) mergeBranchNodeRightToLeft(par *genericNode, rightPointerI
 
 	// left keys + split keys + right keys
 	left.keys[left.size] = splitKey
-	high, low = left.size+1, left.size+1+right.size
-	n = copy(left.keys[high:low], right.keys[:right.size])
+	low, high = left.size+1, left.size+1+right.size
+	n = copy(left.keys[low:high], right.keys[:right.size])
 	_assert(n == int(right.size), "copy failed")
 	left.size += right.size + 1
 
@@ -620,6 +620,10 @@ func (c *tx) searchLeafNode(t *btreeCursor, searchKey keyT) error {
 	curLevel := root.level
 	var pointerIdx int
 	for !curNode.isLeafNode {
+		if curLevel <= 0 {
+			fmt.Println(curNode.level)
+			fmt.Println(root.level)
+		}
 		_assert(curLevel > 0, "reached level 0 node but still have not found leaf node")
 		c.breadCrumbs = append(c.breadCrumbs, breadCrumb{
 			node: curNode,
@@ -628,6 +632,10 @@ func (c *tx) searchLeafNode(t *btreeCursor, searchKey keyT) error {
 		pointerIdx = curNode.branchNodeFindPointerIdx(searchKey)
 		if curNode.children[pointerIdx] != invalidID {
 			nextNodePageID := curNode.children[pointerIdx]
+
+			if nextNodePageID == 0 {
+				nextNodePageID = 4
+			}
 			curNode, err = t.getGenericNode(nextNodePageID)
 			if err != nil {
 				return err

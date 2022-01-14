@@ -483,7 +483,7 @@ type orphanNode struct {
 }
 
 func (n *node) _insertPointerAtIdx(idx int, orphan *orphanNode) {
-	copy(n.children[idx+2:n.keySize+2], n.children[idx+1:n.keySize+1])
+	copy(n.children[idx+2:n.keySize+1], n.children[idx+1:n.keySize+1])
 	copy(n.key[idx+1:n.keySize+1], n.key[idx:n.keySize])
 	n.children[idx+1] = orphan.rightChild
 	n.key[idx] = orphan.key
