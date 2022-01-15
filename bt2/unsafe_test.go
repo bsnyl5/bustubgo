@@ -55,7 +55,7 @@ func Test_castBranchPage(t *testing.T) {
 	h := castBranchFromEmpty(10, newMockPage(somePage))
 	h.size = 9
 	assert.Len(t, h.keys, 10)
-	assert.Len(t, h.children, 10)
+	assert.Len(t, h.children, 11)
 	seed := 10
 	for i := 0; i < seed; i++ {
 		h.keys[i] = keyT{rand.Int63n(100), rand.Int63n(100)}

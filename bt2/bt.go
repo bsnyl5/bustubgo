@@ -509,10 +509,10 @@ func (t *btreeCursor) insert(key keyT, val int64) error {
 			return err
 		}
 
-		currentParent._insertPointerAtIdx(idx, &orphanNode{
+		currentParent._insertPointerAtIdx(int64(idx), &orphanNode{
 			key:        splitKey,
 			rightChild: orphan,
-		})
+		}, t._header.nodeSize)
 		if currentParent.size < t._header.nodeSize {
 			return nil
 		}
@@ -545,7 +545,7 @@ func (t *btreeCursor) insert(key keyT, val int64) error {
 	newRoot._insertPointerAtIdx(0, &orphanNode{
 		key:        splitKey,
 		rightChild: orphan,
-	})
+	}, t._header.nodeSize)
 	t._header.rootPgid = nodeID(newRoot.osPage.GetPageID())
 
 	// headerPage Updated, flush instead of unpin (header page is always pinned)
@@ -658,11 +658,13 @@ type orphanNode struct {
 }
 
 //TODO: refactor this function
-func (n *genericNode) _insertPointerAtIdx(idx int, orphan *orphanNode) {
-	if n.size > int64(idx) {
-		copy(n.children[idx+2:n.size+1], n.children[idx+1:n.size+1])
+func (n *genericNode) _insertPointerAtIdx(idx int64, orphan *orphanNode, maxNodeSize int64) {
+	// children has length maxNodeSize + 1
+
+	if idx+2 <= maxNodeSize+1 {
+		copy(n.children[idx+2:maxNodeSize+1], n.children[idx+1:maxNodeSize+1])
 	}
-	copy(n.keys[idx+1:n.size+1], n.keys[idx:n.size])
+	copy(n.keys[idx+1:maxNodeSize], n.keys[idx:maxNodeSize])
 	n.children[idx+1] = nodeID(orphan.rightChild.osPage.GetPageID())
 	n.keys[idx] = orphan.key
 	n.size++
